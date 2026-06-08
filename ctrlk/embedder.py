@@ -10,6 +10,7 @@ so the daemon pays the import cost once only.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import TYPE_CHECKING
 
@@ -25,11 +26,19 @@ _MODEL_INSTANCE: "SentenceTransformer | None" = None
 _LOADED_MODEL_NAME: str = ""
 
 
+def _suppress_model_progress() -> None:
+    """Keep embedding model load quiet when the daemon detaches from the terminal."""
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    os.environ.setdefault("TQDM_DISABLE", "1")
+
+
 def _get_model(model_name: str) -> "SentenceTransformer":
     global _MODEL_INSTANCE, _LOADED_MODEL_NAME
     with _MODEL_LOCK:
         if _MODEL_INSTANCE is None or _LOADED_MODEL_NAME != model_name:
             log.info("Loading embedding model: %s", model_name)
+            _suppress_model_progress()
             from sentence_transformers import SentenceTransformer  # noqa: PLC0415
             _MODEL_INSTANCE = SentenceTransformer(model_name)
             _LOADED_MODEL_NAME = model_name

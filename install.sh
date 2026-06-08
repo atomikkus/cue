@@ -11,8 +11,10 @@ set -euo pipefail
 
 CTRLK_VERSION="0.1.0"
 CTRLK_CONFIG_DIR="${CTRLK_CONFIG_DIR:-${HOME}/.config/ctrlk}"
+CTRLK_VENV_DIR="${CTRLK_CONFIG_DIR}/venv"
+CTRLK_PATH_LINE='export PATH="${HOME}/.config/ctrlk/venv/bin:$PATH"'
 CTRLK_ZSH_HOOK_LINE='source "${HOME}/.config/ctrlk/ctrlk.zsh"'
-CTRLK_DAEMON_LAUNCH_LINE='(ctrlk-daemon start &>/dev/null &)'
+CTRLK_DAEMON_LAUNCH_LINE='ctrlk-daemon start &>/dev/null'
 ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
 
 PYTHON="${PYTHON:-python3}"
@@ -58,6 +60,14 @@ require_python() {
     ok "Python: $("$PYTHON" --version)"
 }
 
+daemon_bin() {
+    if [[ -x "${CTRLK_VENV_DIR}/bin/ctrlk-daemon" ]]; then
+        echo "${CTRLK_VENV_DIR}/bin/ctrlk-daemon"
+    elif command -v ctrlk-daemon &>/dev/null; then
+        command -v ctrlk-daemon
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
@@ -65,9 +75,10 @@ require_python() {
 if [[ "$UNINSTALL" == "true" ]]; then
     log "Uninstalling ctrlk..."
 
-    # Stop daemon
-    if command -v ctrlk-daemon &>/dev/null; then
-        ctrlk-daemon stop 2>/dev/null || true
+    # Stop daemon (prefer venv binary from a prior install)
+    local_daemon="$(daemon_bin || true)"
+    if [[ -n "$local_daemon" ]]; then
+        "$local_daemon" stop 2>/dev/null || true
     fi
 
     # Remove shell hook lines from .zshrc
@@ -80,7 +91,7 @@ if [[ "$UNINSTALL" == "true" ]]; then
 
     # Remove config dir (ask first)
     if [[ -d "$CTRLK_CONFIG_DIR" ]]; then
-        read -r -p "  Remove $CTRLK_CONFIG_DIR (cache, config, history index)? [y/N] " confirm
+        read -r -p "  Remove $CTRLK_CONFIG_DIR (venv, cache, config, history index)? [y/N] " confirm
         if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
             rm -rf "$CTRLK_CONFIG_DIR"
             ok "Removed $CTRLK_CONFIG_DIR"
@@ -101,19 +112,29 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 require_python
 
-# 1. Install Python package
-log "Installing ctrlk Python package..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-"$PYTHON" -m pip install --quiet --user "$SCRIPT_DIR"
-ok "ctrlk package installed."
 
-# 2. Create config directory
+# 1. Create config directory
 mkdir -p "$CTRLK_CONFIG_DIR"
 ok "Config dir: $CTRLK_CONFIG_DIR"
 
+# 2. Install into an isolated venv (avoids PEP 668 on Homebrew/system Python)
+log "Creating virtual environment at ${CTRLK_VENV_DIR}..."
+if [[ ! -x "${CTRLK_VENV_DIR}/bin/python" ]]; then
+    "$PYTHON" -m venv "$CTRLK_VENV_DIR"
+fi
+VENV_PYTHON="${CTRLK_VENV_DIR}/bin/python"
+VENV_PIP="${CTRLK_VENV_DIR}/bin/pip"
+ok "Virtual environment ready."
+
+log "Installing ctrlk Python package..."
+"$VENV_PIP" install --quiet --upgrade pip
+"$VENV_PIP" install --quiet "$SCRIPT_DIR"
+ok "ctrlk package installed in venv."
+
 # 3. Write default config (if not exists)
 if [[ ! -f "${CTRLK_CONFIG_DIR}/config.toml" ]]; then
-    "$PYTHON" -c "from ctrlk.config import load; load()" 2>/dev/null || true
+    "$VENV_PYTHON" -c "from ctrlk.config import load; load()" 2>/dev/null || true
     ok "Default config written to ${CTRLK_CONFIG_DIR}/config.toml"
 else
     ok "Config already exists, skipping."
@@ -138,6 +159,11 @@ add_line_if_missing() {
 
 if [[ -f "$ZSHRC" || ! -e "$ZSHRC" ]]; then
     touch "$ZSHRC"
+    if add_line_if_missing "$CTRLK_PATH_LINE" "$ZSHRC"; then
+        ok "Added ctrlk venv to PATH in $ZSHRC"
+    else
+        ok "ctrlk PATH already in $ZSHRC"
+    fi
     if add_line_if_missing "$CTRLK_ZSH_HOOK_LINE" "$ZSHRC"; then
         ok "Added shell hook to $ZSHRC"
     else
@@ -152,6 +178,7 @@ if [[ -f "$ZSHRC" || ! -e "$ZSHRC" ]]; then
     fi
 else
     warn "$ZSHRC is not a regular file. Add these lines manually:"
+    echo "    $CTRLK_PATH_LINE"
     echo "    $CTRLK_ZSH_HOOK_LINE"
     [[ "$START_DAEMON" == "true" ]] && echo "    $CTRLK_DAEMON_LAUNCH_LINE"
 fi
@@ -159,17 +186,7 @@ fi
 # 6. Start the daemon now
 if [[ "$START_DAEMON" == "true" ]]; then
     log "Starting ctrlk daemon..."
-    # Find ctrlk-daemon in user bin or PATH
-    DAEMON_BIN=""
-    for candidate in \
-        "${HOME}/.local/bin/ctrlk-daemon" \
-        "$(command -v ctrlk-daemon 2>/dev/null || true)"
-    do
-        if [[ -x "$candidate" ]]; then
-            DAEMON_BIN="$candidate"
-            break
-        fi
-    done
+    DAEMON_BIN="$(daemon_bin || true)"
 
     if [[ -n "$DAEMON_BIN" ]]; then
         "$DAEMON_BIN" stop 2>/dev/null || true
@@ -181,8 +198,7 @@ if [[ "$START_DAEMON" == "true" ]]; then
             warn "Daemon may still be loading. Check with: ctrlk-daemon health"
         fi
     else
-        warn "ctrlk-daemon not found in PATH. You may need to add ~/.local/bin to PATH."
-        warn "Then run: ctrlk-daemon start"
+        warn "ctrlk-daemon not found. Run: ${CTRLK_VENV_DIR}/bin/ctrlk-daemon start"
     fi
 fi
 
@@ -205,6 +221,7 @@ echo "     source ~/.zshrc"
 echo ""
 echo "  3. Press Ctrl+K at any prompt and type your intent."
 echo ""
+echo "  Binaries:             ${CTRLK_VENV_DIR}/bin/"
 echo "  Check daemon status:  ctrlk-daemon health"
 echo "  View stats:           ctrlk stats"
 echo "  Reload config:        kill -HUP \$(cat ${CTRLK_CONFIG_DIR}/daemon.pid)"

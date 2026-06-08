@@ -19,6 +19,7 @@ import logging
 import os
 import signal
 import socket
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -194,8 +195,20 @@ def _read_pid(pid_path: Path) -> int | None:
         return None
 
 
-def _cmd_start(socket_path: Path, pid_path: Path, log_level: str) -> None:
-    """Start the daemon in the foreground (called after fork by install.sh)."""
+def _is_running(pid_path: Path) -> int | None:
+    pid = _read_pid(pid_path)
+    if pid is None:
+        return None
+    try:
+        os.kill(pid, 0)
+        return pid
+    except ProcessLookupError:
+        pid_path.unlink(missing_ok=True)
+        return None
+
+
+def _run_daemon(socket_path: Path, pid_path: Path, log_level: str) -> NoReturn:
+    """Run the daemon process until SIGTERM/SIGINT."""
     _setup_logging(log_level)
     log.info("Starting ctrlk daemon (pid=%d)", os.getpid())
     _write_pid(pid_path)
@@ -213,6 +226,85 @@ def _cmd_start(socket_path: Path, pid_path: Path, log_level: str) -> None:
     signal.signal(signal.SIGINT, _shutdown)
 
     server.start()
+    sys.exit(0)
+
+
+def _wait_for_socket(socket_path: Path, timeout_s: float = 60.0) -> bool:
+    import time  # noqa: PLC0415
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if socket_path.exists():
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                    s.settimeout(1.0)
+                    s.connect(str(socket_path))
+                    s.sendall(json.dumps({"op": "health"}).encode() + b"\n")
+                    data = s.recv(4096)
+                resp = json.loads(data.decode().strip())
+                if resp.get("ok"):
+                    return True
+            except OSError:
+                pass
+        time.sleep(0.25)
+    return False
+
+
+def _daemon_argv(
+    socket_path: Path,
+    pid_path: Path,
+    log_level: str,
+    *,
+    foreground: bool,
+) -> list[str]:
+    argv = [
+        sys.executable,
+        "-m",
+        "ctrlk.daemon",
+        "start",
+        "--socket",
+        str(socket_path),
+        "--pid",
+        str(pid_path),
+        "--log-level",
+        log_level,
+    ]
+    if foreground:
+        argv.append("--foreground")
+    return argv
+
+
+def _cmd_start(socket_path: Path, pid_path: Path, log_level: str, *, foreground: bool = False) -> None:
+    """Start the daemon. Returns to the shell unless --foreground is set."""
+    running = _is_running(pid_path)
+    if running is not None:
+        print(f"ctrlk daemon already running (pid={running}).")
+        return
+
+    if foreground:
+        _run_daemon(socket_path, pid_path, log_level)
+
+    print("Starting ctrlk daemon...")
+    # subprocess spawn — safe on macOS (os.fork() crashes Python after ObjC init)
+    proc = subprocess.Popen(
+        _daemon_argv(socket_path, pid_path, log_level, foreground=True),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    if _wait_for_socket(socket_path):
+        ready_pid = _read_pid(pid_path)
+        print(f"ctrlk daemon ready (pid={ready_pid}).")
+        return
+
+    if proc.poll() is not None:
+        print(f"ctrlk daemon failed to start (exit code={proc.returncode}).")
+        print("Run with logs visible: ctrlk-daemon start --foreground")
+        sys.exit(1)
+
+    print("ctrlk daemon is still starting (embedding model may be loading).")
+    print("Check status with: ctrlk-daemon health")
 
 
 def _cmd_stop(pid_path: Path) -> None:
@@ -255,13 +347,18 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--socket", default=str(_DEFAULT_SOCKET_PATH), help="Socket path")
     ap.add_argument("--pid", default=str(_DEFAULT_PID_PATH), help="PID file path")
     ap.add_argument("--log-level", default="WARNING", help="Logging level")
+    ap.add_argument(
+        "--foreground", "-f",
+        action="store_true",
+        help="Run in the foreground (for debugging; blocks the terminal)",
+    )
     args = ap.parse_args(argv)
 
     socket_path = Path(args.socket).expanduser()
     pid_path = Path(args.pid).expanduser()
 
     if args.command == "start":
-        _cmd_start(socket_path, pid_path, args.log_level)
+        _cmd_start(socket_path, pid_path, args.log_level, foreground=args.foreground)
     elif args.command == "stop":
         _cmd_stop(pid_path)
     elif args.command == "health":
@@ -270,7 +367,7 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_stop(pid_path)
         import time  # noqa: PLC0415
         time.sleep(0.5)
-        _cmd_start(socket_path, pid_path, args.log_level)
+        _cmd_start(socket_path, pid_path, args.log_level, foreground=args.foreground)
 
 
 if __name__ == "__main__":

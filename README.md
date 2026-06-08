@@ -21,11 +21,12 @@ chmod +x install.sh
 
 The installer will:
 
-1. Install the `ctrlk` Python package (`pip install --user`)
-2. Create `~/.config/ctrlk/` with default `config.toml`
-3. Copy the zsh widget to `~/.config/ctrlk/ctrlk.zsh`
-4. Append shell hooks to `~/.zshrc`
-5. Start the background daemon
+1. Create an isolated Python venv at `~/.config/ctrlk/venv` (works on Homebrew/macOS PEP 668 Python)
+2. Install the `ctrlk` package into that venv
+3. Create `~/.config/ctrlk/` with default `config.toml`
+4. Copy the zsh widget to `~/.config/ctrlk/ctrlk.zsh`
+5. Append shell hooks to `~/.zshrc` (including PATH to the venv)
+6. Start the background daemon
 
 Reload your shell:
 
@@ -33,7 +34,7 @@ Reload your shell:
 source ~/.zshrc
 ```
 
-Ensure `~/.local/bin` is on your `PATH` (where `ctrlk` and `ctrlk-daemon` are installed).
+No manual `pip install` or `~/.local/bin` setup needed — the installer handles the venv for you.
 
 ### Install options
 
@@ -73,7 +74,8 @@ Keybindings are configurable in `~/.config/ctrlk/config.toml` under `[keys]`.
 ## CLI
 
 ```bash
-ctrlk-daemon start          # start the background daemon
+ctrlk-daemon start          # start in background (returns to shell when ready)
+ctrlk-daemon start -f       # foreground mode for debugging (blocks terminal)
 ctrlk-daemon stop           # stop the daemon
 ctrlk-daemon health         # check daemon status
 ctrlk health                # same, via main CLI
@@ -89,17 +91,18 @@ kill -HUP $(cat ~/.config/ctrlk/daemon.pid)
 
 ## Manual install
 
-If you prefer not to use `install.sh`:
+If you prefer not to use `install.sh`, use a dedicated venv (required on Homebrew Python due to [PEP 668](https://peps.python.org/pep-0668/)):
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+mkdir -p ~/.config/ctrlk
+python3 -m venv ~/.config/ctrlk/venv
+~/.config/ctrlk/venv/bin/pip install /path/to/ctrlk
 
 # Start daemon
-ctrlk-daemon start
+~/.config/ctrlk/venv/bin/ctrlk-daemon start
 
 # Add to ~/.zshrc:
+export PATH="${HOME}/.config/ctrlk/venv/bin:$PATH"
 source "${HOME}/.config/ctrlk/ctrlk.zsh"
 (ctrlk-daemon start &>/dev/null &)
 ```

@@ -83,27 +83,34 @@ _ctrlk_context_json() {
 # ---------------------------------------------------------------------------
 
 _ctrlk_generate() {
-    local query response command tier
-
-    # Prompt for intent inline (replaces the buffer temporarily)
+    emulate -L zsh
+    local query response command tty_path
     local saved_buffer="$BUFFER"
-    BUFFER="ctrlk> "
-    zle redisplay
 
-    # Read query from user (vared gives inline editing)
-    local query=""
-    zle -R "ctrlk (Ctrl+C to cancel): "
-    if ! read -r "query?ctrlk> "; then
+    # ZLE cannot call read/vared directly — suspend editing and read from the tty
+    zle -I
+    tty_path=$(tty 2>/dev/null)
+    if [[ -z "$tty_path" || ! -r "$tty_path" || ! -w "$tty_path" ]]; then
+        zle -M "ctrlk: no tty (try: ctrlk generate \"your intent\")"
         BUFFER="$saved_buffer"
         zle redisplay
-        return
+        return 0
+    fi
+    query=""
+    if ! {
+        print -n $'ctrlk> ' > "$tty_path"
+        read -r query < "$tty_path"
+    }; then
+        BUFFER="$saved_buffer"
+        zle redisplay
+        return 0
     fi
 
-    query="${query# }"  # trim leading space
+    query="${query#"${query%%[![:space:]]*}"}"
     if [[ -z "$query" ]]; then
         BUFFER="$saved_buffer"
         zle redisplay
-        return
+        return 0
     fi
 
     # Show spinner while waiting
