@@ -1,0 +1,24 @@
+{
+  "id": "gen-xyz789",
+  "object": "chat.completion",
+  "created": 1699000000,
+  "model": "anthropic/claude-haiku-4-5",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "find . -name '*.py' -type f"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 142,
+    "completion_tokens": 12,
+    "total_tokens": 154,
+    "prompt_tokens_details": {
+      "cached_tokens": 100
+    }
+  }
+}
