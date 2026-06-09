@@ -1,161 +1,172 @@
-# ctrlk
+<p align="center">
+  <img src="cue_vaporwave_transparent.png" alt="Cue" width="280">
+</p>
 
-AI-native **Ctrl+K for the terminal**. Type intent in plain language → a shell command appears in your buffer. You review it and press Enter. `ctrlk` never runs anything for you.
+<h1 align="center">Cue</h1>
 
-Most queries resolve locally (history, semantic cache) at zero API cost. The LLM is only used when local tiers miss.
+<p align="center">
+  <strong>AI-native Ctrl+K for your terminal.</strong><br>
+  Type intent in plain language → a shell command appears in your buffer.<br>
+  You review it. You press Enter. Cue never runs anything for you.
+</p>
 
-## Requirements
+<p align="center">
+  <code>Python 3.11+</code> · <code>zsh</code> · <code>local-first</code> · <code>multi-provider</code>
+</p>
 
-- **Python 3.11+**
-- **zsh** (bash support planned)
-- At least one LLM provider API key (for novel queries that miss local tiers)
+---
 
-## Quick install
+## Why Cue
+
+Most terminal AI tools burn tokens on every keystroke. Cue doesn't. A warm daemon resolves your intent through a tiered ladder — history, semantic cache, then LLM — and stops at the first confident hit.
+
+| Tier | Source | Cost | Speed |
+|:----:|--------|------|-------|
+| **0** | Exact cache / alias | free | ~3 ms |
+| **1** | Semantic cache | free | ~30 ms |
+| **2** | Your shell history | free | ~40 ms |
+| **3** | LLM generation | ~150 tokens | ~400–800 ms |
+
+Embeddings run locally. The network is touched only when local tiers miss.
+
+---
+
+## Install
 
 ```bash
-git clone <your-repo-url> ctrlk
-cd ctrlk
+git clone <your-repo-url> termite
+cd termite
 chmod +x install.sh
 ./install.sh
-```
-
-The installer will:
-
-1. Create an isolated Python venv at `~/.config/ctrlk/venv` (works on Homebrew/macOS PEP 668 Python)
-2. Install the `ctrlk` package into that venv
-3. Create `~/.config/ctrlk/` with default `config.toml`
-4. Copy the zsh widget to `~/.config/ctrlk/ctrlk.zsh`
-5. Append shell hooks to `~/.zshrc` (including PATH to the venv)
-6. Start the background daemon
-
-Reload your shell:
-
-```bash
 source ~/.zshrc
 ```
 
-No manual `pip install` or `~/.local/bin` setup needed — the installer handles the venv for you.
-
-After install, verify everything:
+The installer handles everything that trips people up on macOS — PEP 668 Python, an isolated venv at `~/.config/cue/venv`, shell hooks, and the background daemon.
 
 ```bash
-source ~/.zshrc
-ctrlk doctor
-ctrlk generate "list files here"
+cue doctor                      # verify daemon, widget, hooks, keybindings
+cue generate "list files here"  # smoke test from the terminal
 ```
 
-`ctrlk doctor` checks the daemon, shell widget, zsh hooks, and Ctrl+K binding.
-
-### Install options
+<details>
+<summary><strong>Install options</strong></summary>
 
 ```bash
-./install.sh --python /path/to/python3.11   # use a specific Python
-./install.sh --no-daemon                    # install hooks only; start daemon manually
-./install.sh --uninstall                    # remove hooks and optionally config/cache
+./install.sh --python /path/to/python3.11   # specific Python
+./install.sh --no-daemon                    # hooks only; start daemon manually
+./install.sh --uninstall                    # remove hooks and optionally ~/.config/cue
 ```
+
+</details>
+
+---
 
 ## API keys
 
-Set at least one provider key before using Tier-3 (LLM) generation:
+Add at least one key to `~/.zshrc`, then restart the daemon:
 
 ```bash
-export ANTHROPIC_API_KEY='sk-ant-...'
 export OPENROUTER_API_KEY='sk-or-...'
-export OPENAI_API_KEY='sk-...'
-export MISTRAL_API_KEY='...'
+# export ANTHROPIC_API_KEY='sk-ant-...'
+# export OPENAI_API_KEY='sk-...'
+
+cue-daemon restart
 ```
 
-`ctrlk` checks `CTRLK_<PROVIDER>_API_KEY` first, then the provider's canonical env var (e.g. `ANTHROPIC_API_KEY`).
+Cue checks `CUE_<PROVIDER>_API_KEY` first, then the provider's canonical env var. For a fully local setup, point `providers.primary` at `[providers.custom]` (Ollama, vLLM, etc.) in `~/.config/cue/config.toml`.
 
-For a local model via Ollama, configure the `[providers.custom]` section in `config.toml` and point `providers.primary` at `custom` — no cloud key required.
+---
 
 ## Usage
 
-| Keybinding | Action |
-|------------|--------|
+Press a key at any zsh prompt, type your intent, get a command in the buffer.
+
+| Key | Action |
+|-----|--------|
 | **Ctrl+K** | Generate a command from natural language |
-| **Ctrl+E** | Explain the command currently in the buffer |
+| **Ctrl+E** | Explain what's in the buffer |
 | **Ctrl+F** | Fix the last failed command |
 
-At any zsh prompt, press **Ctrl+K**, type your intent (e.g. `find large files in this directory`), and the suggested command lands in your buffer. Edit if needed, then press **Enter**.
+```
+you>  [Ctrl+K]
+cue>  find large files in this directory
+you>  find . -type f -size +100M          ← lands here, editable, not executed
+```
 
-Keybindings are configurable in `~/.config/ctrlk/config.toml` under `[keys]`.
+### Cursor / macOS tip
+
+If **Ctrl+K** does nothing, Cursor or your terminal may be stealing it. Rebind in `~/.zshrc` before sourcing `cue.zsh`:
+
+```bash
+export CUE_KEY_GENERATE='^X^K'   # Ctrl+X, then Ctrl+K
+```
+
+---
 
 ## CLI
 
 ```bash
-ctrlk install-shell         # install/update zsh widget from the Python package
-ctrlk doctor                # verify daemon, widget, hooks, and keybindings
-ctrlk-daemon start          # start in background (returns to shell when ready)
-ctrlk-daemon start -f       # foreground mode for debugging (blocks terminal)
-ctrlk-daemon stop           # stop the daemon
-ctrlk-daemon health         # check daemon status
-ctrlk health                # same, via main CLI
-ctrlk stats                 # hit rates, tier breakdown, token usage
-ctrlk generate "list git branches"   # test from the terminal
-```
+cue install-shell              # refresh zsh widget after upgrades
+cue doctor                     # full install health check
+cue stats                      # hit rates, tier breakdown, token usage
+cue generate "show git status" # test without keybindings
 
-Re-run `ctrlk install-shell` after upgrading the package to refresh the zsh widget without a full reinstall.
+cue-daemon start               # background (returns when ready)
+cue-daemon stop
+cue-daemon health
+```
 
 Reload config without restarting:
 
 ```bash
-kill -HUP $(cat ~/.config/ctrlk/daemon.pid)
+kill -HUP $(cat ~/.config/cue/daemon.pid)
 ```
 
-## Manual install
-
-If you prefer not to use `install.sh`, use a dedicated venv (required on Homebrew Python due to [PEP 668](https://peps.python.org/pep-0668/)):
-
-```bash
-mkdir -p ~/.config/ctrlk
-python3 -m venv ~/.config/ctrlk/venv
-~/.config/ctrlk/venv/bin/pip install /path/to/ctrlk
-
-# Start daemon
-~/.config/ctrlk/venv/bin/ctrlk-daemon start
-
-# Add to ~/.zshrc:
-export PATH="${HOME}/.config/ctrlk/venv/bin:$PATH"
-source "${HOME}/.config/ctrlk/ctrlk.zsh"
-(ctrlk-daemon start &>/dev/null &)
-```
-
-Copy `shell/ctrlk.zsh` to `~/.config/ctrlk/ctrlk.zsh` if it does not exist yet. On first daemon start, default config is written to `~/.config/ctrlk/config.toml`.
+---
 
 ## Configuration
 
-All settings live in `~/.config/ctrlk/config.toml`:
+Everything lives in `~/.config/cue/config.toml`:
 
-- **Providers** — primary and escalate models (`openrouter`, `anthropic`, `openai`, `mistral`, `custom`)
-- **Cache** — similarity thresholds, SQLite path
-- **Context** — git branch, pwd, exit code sent to the resolver
-- **Embeddings** — local model for semantic cache/history (default: `all-MiniLM-L6-v2`)
-- **Safety** — danger scan, secret redaction
+| Section | What it controls |
+|---------|------------------|
+| `[keys]` | Keybindings (`^K`, `^E`, `^F`) |
+| `[providers.primary]` | First LLM attempt |
+| `[providers.escalate]` | Retry model on validation failure |
+| `[cache]` | Similarity thresholds, SQLite path |
+| `[embeddings]` | Local model for cache/history (default: `all-MiniLM-L6-v2`) |
+| `[safety]` | Danger scan, secret redaction |
 
-See `CLAUDE.md` for architecture and design details.
-
-## Development
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-pytest
-ruff check ctrlk tests
-```
+---
 
 ## How it works
 
 ```
-Query
- ├─ Tier 0  Exact history / alias match     (0 tokens, ~3ms)
- ├─ Tier 1  Semantic cache hit              (0 tokens, ~30ms)
- ├─ Tier 2  History semantic search         (0 tokens, ~40ms)
- └─ Tier 3  LLM generation                  (~150 tokens, ~400–800ms)
+┌─────────────┐     Unix socket      ┌──────────────────────────────┐
+│  zsh widget │  ─────────────────►  │  cue-daemon (warm Python)    │
+│  Ctrl+K     │  ◄─────────────────  │  embedder · cache · resolver │
+└─────────────┘   command in buffer  └──────────────────────────────┘
+                                              │ Tier 3 only
+                                              ▼
+                                     Anthropic · OpenAI · OpenRouter · Ollama …
 ```
 
-A warm Python daemon holds the embedding model, SQLite cache, and provider clients. The zsh widget sends JSON over a Unix socket; responses are injected into the ZLE buffer only — never executed automatically.
+The shell layer is thin. All intelligence lives in the daemon. Commands are injected into the ZLE buffer only — there is no execute mode.
+
+---
+
+## Development
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
+ruff check cue tests
+```
+
+See [`CLAUDE.md`](CLAUDE.md) for architecture, design principles, and the implementation roadmap.
+
+---
 
 ## License
 

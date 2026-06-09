@@ -1,8 +1,8 @@
-# CLAUDE.md — `ctrlk`: An AI-Native Terminal Command Layer
+# CLAUDE.md — `cue`: An AI-Native Terminal Command Layer
 
 > A fast, token-frugal, provider-agnostic Ctrl+K for the terminal.
 > Type intent in plain language → the correct shell command appears in your buffer.
-> You review it. You press Enter. `ctrlk` never runs anything for you.
+> You review it. You press Enter. `cue` never runs anything for you.
 > Most queries never touch an LLM. The ones that do are lean.
 
 This file is the single source of truth for the project's architecture, design
@@ -13,7 +13,7 @@ coding agents (Claude Code, Cursor, etc.). Keep it current.
 
 ## 1. Vision & Scope
 
-`ctrlk` is a terminal utility that turns natural-language intent into executable
+`cue` is a terminal utility that turns natural-language intent into executable
 shell commands, inline, without leaving the prompt. It is inspired by Cursor's
 terminal Ctrl+K but is **standalone, shell-native, multi-provider, and learns from
 your own history**.
@@ -30,7 +30,7 @@ your own history**.
 5. **Provider-agnostic** — Anthropic, OpenAI, Mistral, OpenRouter, or any custom
    OpenAI-compatible endpoint, swappable via config.
 6. **Buffer-always** — commands are injected into the editable ZLE buffer and
-   nothing more. `ctrlk` has no execute mode, no confirm-and-run flag, no auto-run
+   nothing more. `cue` has no execute mode, no confirm-and-run flag, no auto-run
    shortcut. The user presses Enter. This is an architectural invariant, not a default.
 
 ### Explicit non-goals (v1)
@@ -236,7 +236,7 @@ REGISTRY = {
     "mistral":    lambda c: OpenAICompatProvider("https://api.mistral.ai/v1", c.key, "mistral"),
     "openrouter": lambda c: OpenAICompatProvider("https://openrouter.ai/api/v1", c.key, "openrouter",
                                                  extra_headers={"HTTP-Referer": c.referer or "",
-                                                                "X-Title": "ctrlk"}),
+                                                                "X-Title": "cue"}),
     "custom":     lambda c: OpenAICompatProvider(c.base_url, c.key, c.name or "custom"),
 }
 ```
@@ -245,7 +245,7 @@ REGISTRY = {
 - Keys are read from **environment variables first**, then the config file, then an
   OS keychain (optional, via `keyring`). Never logged, never sent anywhere except the
   provider's own endpoint.
-- Env var convention: `CTRLK_<PROVIDER>_API_KEY` (e.g. `CTRLK_OPENROUTER_API_KEY`),
+- Env var convention: `CUE_<PROVIDER>_API_KEY` (e.g. `CUE_OPENROUTER_API_KEY`),
   falling back to the provider's canonical var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
   `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`).
 
@@ -300,7 +300,7 @@ Generated and cached commands pass through a validator before reaching the buffe
 - **Danger scan** — flag destructive patterns (`rm -rf /`, `mkfs`, `dd of=/dev/...`,
   fork bombs, curl-pipe-to-shell). Dangerous commands are surfaced with a visible
   `⚠` warning prefix in the buffer so the user sees them before pressing Enter.
-- **Buffer-always, unconditionally** — there is no code path in `ctrlk` that calls
+- **Buffer-always, unconditionally** — there is no code path in `cue` that calls
   `zle accept-line` or any equivalent. The ZLE widget ends after `BUFFER=` and
   `zle redisplay`. That is the complete execution surface.
 - **Secret redaction** — context sent to providers is scrubbed of obvious secrets
@@ -311,7 +311,7 @@ Generated and cached commands pass through a validator before reaching the buffe
 ## 7. Storage & Embeddings
 
 ### 7.1 SQLite schema
-Single file at `~/.config/ctrlk/cache.db`. SQLite + on-the-fly cosine in numpy is more
+Single file at `~/.config/cue/cache.db`. SQLite + on-the-fly cosine in numpy is more
 than enough at this scale (≤10k history rows, ≤1k cache rows). No external vector DB.
 
 ```sql
@@ -377,7 +377,7 @@ flags all live here. The widget reads keybindings at shell startup; the daemon r
 the rest at launch and on `SIGHUP`.
 
 ```toml
-# ~/.config/ctrlk/config.toml
+# ~/.config/cue/config.toml
 
 [keys]                       # fully configurable; rebind + reload
 generate = "^K"              # Ctrl+K  natural language -> command
@@ -395,8 +395,8 @@ model      = "claude-sonnet-4-6"
 max_tokens = 200
 
 [providers.openrouter]
-# key resolved from CTRLK_OPENROUTER_API_KEY or OPENROUTER_API_KEY
-referer = "https://github.com/<you>/ctrlk"
+# key resolved from CUE_OPENROUTER_API_KEY or OPENROUTER_API_KEY
+referer = "https://github.com/<you>/cue"
 
 [providers.custom]           # any OpenAI-compatible endpoint (Ollama, vLLM, LocalAI)
 name     = "local-ollama"
@@ -407,7 +407,7 @@ model    = "qwen2.5-coder:1.5b"
 [cache]
 similarity_threshold = 0.92
 history_threshold    = 0.88
-db_path = "~/.config/ctrlk/cache.db"
+db_path = "~/.config/cue/cache.db"
 
 [context]
 include_git  = true
@@ -432,15 +432,15 @@ enabled = false             # local-only stats; opt-in
 ## 9. Directory Layout
 
 ```
-ctrlk/
+cue/
 ├── CLAUDE.md                  # this file
 ├── README.md
 ├── pyproject.toml
 ├── install.sh                 # installs daemon, shell hooks, default config
 ├── shell/
-│   ├── ctrlk.zsh              # ZLE widgets + socket client (sourced in .zshrc)
-│   └── ctrlk.bash             # bash port (Phase 4)
-├── ctrlk/
+│   ├── cue.zsh              # ZLE widgets + socket client (sourced in .zshrc)
+│   └── cue.bash             # bash port (Phase 4)
+├── cue/
 │   ├── __init__.py
 │   ├── daemon.py              # Unix socket server, lifecycle
 │   ├── router.py              # op dispatch
@@ -506,7 +506,7 @@ methods.
 ### Phase 0 — Skeleton (foundation)
 - [ ] Repo, `pyproject.toml`, config loader with schema validation.
 - [ ] Daemon with Unix socket server; newline-framed JSON protocol.
-- [ ] Minimal `ctrlk.zsh` widget: `^K` → prompt → socket → buffer.
+- [ ] Minimal `cue.zsh` widget: `^K` → prompt → socket → buffer.
 - [ ] Echo round-trip working end to end (no intelligence yet).
 **Exit criteria:** pressing Ctrl+K, typing text, and seeing it returned into the buffer.
 
@@ -536,11 +536,11 @@ zero API cost; cache/history hits return < 60ms.
 - [ ] Spinner during network calls; cancel on Esc.
 - [ ] `^E` explain and `^F` fix-last operations.
 - [ ] Secret redaction in context.
-- [ ] Local telemetry (opt-in) + a `ctrlk stats` command (hit rates, tokens saved).
+- [ ] Local telemetry (opt-in) + a `cue stats` command (hit rates, tokens saved).
 **Exit criteria:** feels instant on hits, smooth on misses; explain/fix usable daily.
 
 ### Phase 4 — Distribution & breadth
-- [ ] bash port (`ctrlk.bash`); fish stretch goal.
+- [ ] bash port (`cue.bash`); fish stretch goal.
 - [ ] `install.sh` + Homebrew formula + pip package.
 - [ ] OS keychain integration for keys.
 - [ ] Docs, README, recorded demo.

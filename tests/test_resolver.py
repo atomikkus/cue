@@ -9,11 +9,11 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from ctrlk.config import Config
-from ctrlk.context import ShellContext
-from ctrlk.providers.base import GenResult
-from ctrlk.resolver import Resolver, _normalize
-from ctrlk.store import Store
+from cue.config import Config
+from cue.context import ShellContext
+from cue.providers.base import GenResult
+from cue.resolver import Resolver, _normalize
+from cue.store import Store
 
 
 # ---------------------------------------------------------------------------
@@ -264,14 +264,14 @@ class TestTier3:
         resolver = _make_resolver(store, embedder, primary, escalate)
 
         # Patch validate to make primary's output invalid
-        import ctrlk.resolver as resolver_mod
+        import cue.resolver as resolver_mod
         original_validate = resolver_mod.validate
 
         call_count = [0]
         def _patched_validate(cmd, *, danger_scan=True):
             call_count[0] += 1
             if "broken quote" in cmd:
-                from ctrlk.validator import ValidationResult
+                from cue.validator import ValidationResult
                 return ValidationResult(
                     command=cmd, safe_command=cmd,
                     is_valid=False, is_dangerous=False,
@@ -280,7 +280,7 @@ class TestTier3:
                 )
             return original_validate(cmd, danger_scan=danger_scan)
 
-        with patch("ctrlk.resolver.validate", side_effect=_patched_validate):
+        with patch("cue.resolver.validate", side_effect=_patched_validate):
             ctx = _make_context()
             result = resolver.resolve("some query", ctx)
 
@@ -325,7 +325,7 @@ class TestTier3:
 
 class TestContextSensitivity:
     def test_deictic_query_detected(self):
-        from ctrlk.context import is_context_sensitive
+        from cue.context import is_context_sensitive
         # "service" is a concrete noun so that one is NOT context-sensitive — correct behavior
         # Queries with deictic words but NO concrete nouns are flagged
         assert is_context_sensitive("delete the last migration")
@@ -333,13 +333,13 @@ class TestContextSensitivity:
         assert is_context_sensitive("run that again")
 
     def test_concrete_noun_not_sensitive(self):
-        from ctrlk.context import is_context_sensitive
+        from cue.context import is_context_sensitive
         # Has deictic but also concrete noun — not context-sensitive
         assert not is_context_sensitive("list all files")
         assert not is_context_sensitive("show git branch")
 
     def test_non_deictic_not_sensitive(self):
-        from ctrlk.context import is_context_sensitive
+        from cue.context import is_context_sensitive
         assert not is_context_sensitive("find all python files recursively")
         assert not is_context_sensitive("compress a directory to tar gz")
 

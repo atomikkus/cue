@@ -1,7 +1,7 @@
 """Provider registry — instantiates providers from config.
 
 Key resolution order for every provider:
-  1. CTRLK_<PROVIDER>_API_KEY environment variable
+  1. CUE_<PROVIDER>_API_KEY environment variable
   2. Provider's canonical env var (ANTHROPIC_API_KEY, OPENAI_API_KEY, …)
   3. The 'key' field in the config file
   4. OS keychain (optional, via keyring library)
@@ -21,7 +21,7 @@ from .base import Provider
 from .openai_compat import OpenAICompatProvider
 
 if TYPE_CHECKING:
-    from ctrlk.config import Config, ProviderSpecificConfig
+    from cue.config import Config, ProviderSpecificConfig
 
 log = logging.getLogger(__name__)
 
@@ -36,9 +36,9 @@ _ENV_FALLBACKS: dict[str, str] = {
 
 def _resolve_key(provider_name: str, config_key: str) -> str:
     """Resolve API key using the documented priority order."""
-    # 1. CTRLK-prefixed env var
-    ctrlk_var = f"CTRLK_{provider_name.upper()}_API_KEY"
-    if val := os.environ.get(ctrlk_var):
+    # 1. CUE-prefixed env var
+    cue_var = f"CUE_{provider_name.upper()}_API_KEY"
+    if val := os.environ.get(cue_var):
         return val
 
     # 2. Canonical provider env var
@@ -53,7 +53,7 @@ def _resolve_key(provider_name: str, config_key: str) -> str:
     # 4. OS keychain (best-effort)
     try:
         import keyring  # type: ignore[import]
-        val = keyring.get_password("ctrlk", provider_name)
+        val = keyring.get_password("cue", provider_name)
         if val:
             return val
     except Exception:
@@ -95,7 +95,7 @@ def build_registry(config: "Config") -> dict[str, Provider]:
     # OpenRouter
     or_cfg = config.get_provider_config("openrouter")
     key = _resolve_key("openrouter", or_cfg.key)
-    extra_headers: dict[str, str] = {"X-Title": "ctrlk"}
+    extra_headers: dict[str, str] = {"X-Title": "cue"}
     if or_cfg.referer:
         extra_headers["HTTP-Referer"] = or_cfg.referer
     providers["openrouter"] = OpenAICompatProvider(

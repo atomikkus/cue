@@ -27,10 +27,10 @@ class AnthropicProvider:
     supports_prompt_caching = True
 
     def __init__(self, api_key: str = "") -> None:
-        # Key resolution order: explicit arg → CTRLK_ANTHROPIC_API_KEY → ANTHROPIC_API_KEY
+        # Key resolution order: explicit arg → CUE_ANTHROPIC_API_KEY → ANTHROPIC_API_KEY
         self.api_key = (
             api_key
-            or os.environ.get("CTRLK_ANTHROPIC_API_KEY", "")
+            or os.environ.get("CUE_ANTHROPIC_API_KEY", "")
             or os.environ.get("ANTHROPIC_API_KEY", "")
         )
 

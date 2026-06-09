@@ -1,5 +1,5 @@
-# ctrlk.zsh — ZLE widgets for ctrlk
-# Source this file in your .zshrc:  source ~/.config/ctrlk/ctrlk.zsh
+# cue.zsh — ZLE widgets for cue
+# Source this file in your .zshrc:  source ~/.config/cue/cue.zsh
 #
 # BUFFER-ALWAYS INVARIANT: These widgets NEVER call `zle accept-line` or any
 # equivalent. They end at BUFFER= + zle redisplay. The user presses Enter.
@@ -9,24 +9,24 @@
 # Configuration
 # ---------------------------------------------------------------------------
 
-CTRLK_SOCKET="${CTRLK_SOCKET:-${HOME}/.config/ctrlk/daemon.sock}"
-CTRLK_TIMEOUT="${CTRLK_TIMEOUT:-15}"
+CUE_SOCKET="${CUE_SOCKET:-${HOME}/.config/cue/daemon.sock}"
+CUE_TIMEOUT="${CUE_TIMEOUT:-15}"
 
 # ---------------------------------------------------------------------------
 # Internal: send a JSON request to the daemon, return raw response
 # ---------------------------------------------------------------------------
 
-_ctrlk_send() {
-    # Usage: _ctrlk_send '<json>'
+_cue_send() {
+    # Usage: _cue_send '<json>'
     # Writes daemon response to stdout. Returns 1 on failure.
     local json="$1"
-    if [[ ! -S "$CTRLK_SOCKET" ]]; then
-        print -u2 "ctrlk: daemon socket not found (${CTRLK_SOCKET}). Run: ctrlk-daemon start"
+    if [[ ! -S "$CUE_SOCKET" ]]; then
+        print -u2 "cue: daemon socket not found (${CUE_SOCKET}). Run: cue-daemon start"
         return 1
     fi
     # Use Python for the socket call — it's already in PATH and handles the
     # newline-framed protocol correctly across platforms.
-    python3 - "$CTRLK_SOCKET" "$json" <<'PYEOF'
+    python3 - "$CUE_SOCKET" "$json" <<'PYEOF'
 import json, socket, sys
 sock_path, payload = sys.argv[1], sys.argv[2]
 try:
@@ -52,7 +52,7 @@ PYEOF
 # Internal: build context JSON from current shell state
 # ---------------------------------------------------------------------------
 
-_ctrlk_context_json() {
+_cue_context_json() {
     local cwd git_branch git_remote project_root os_name
     cwd="$(pwd)"
     os_name="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -75,14 +75,14 @@ _ctrlk_context_json() {
 
     printf '{"cwd":"%s","git_branch":"%s","git_remote":"%s","project_root":"%s","last_exit_code":%d,"shell":"%s","os":"%s"}' \
         "$esc_cwd" "$esc_branch" "$esc_remote" "$esc_root" \
-        "${CTRLK_LAST_EXIT:-0}" "${SHELL:-zsh}" "$os_name"
+        "${CUE_LAST_EXIT:-0}" "${SHELL:-zsh}" "$os_name"
 }
 
 # ---------------------------------------------------------------------------
 # Widget: ^K — generate command from natural language
 # ---------------------------------------------------------------------------
 
-_ctrlk_read_line() {
+_cue_read_line() {
     # ZLE cannot call read/vared (recursive ZLE error) — collect keys directly
     emulate -L zsh
     local char line="$1" prompt="$2"
@@ -102,12 +102,12 @@ _ctrlk_read_line() {
     return 0
 }
 
-_ctrlk_generate() {
+_cue_generate() {
     emulate -L zsh
     local query response command
     local saved_buffer="$BUFFER"
 
-    if ! _ctrlk_read_line "" "ctrlk> "; then
+    if ! _cue_read_line "" "cue> "; then
         BUFFER="$saved_buffer"
         zle redisplay
         return 0
@@ -126,12 +126,12 @@ _ctrlk_generate() {
 
     # Build and send request
     local ctx_json
-    ctx_json="$(_ctrlk_context_json)"
+    ctx_json="$(_cue_context_json)"
     local esc_query="${query//\"/\\\"}"
     local req_json
     req_json="$(printf '{"op":"generate","query":"%s","context":%s}' "$esc_query" "$ctx_json")"
 
-    response="$(_ctrlk_send "$req_json" 2>/dev/null)"
+    response="$(_cue_send "$req_json" 2>/dev/null)"
 
     if [[ -z "$response" ]]; then
         BUFFER="$saved_buffer"
@@ -147,7 +147,7 @@ try:
     if d.get('ok') and d.get('command'):
         print(d['command'])
     elif d.get('error'):
-        print('# ctrlk error: ' + d['error'][:80])
+        print('# cue error: ' + d['error'][:80])
     else:
         print('')
 except Exception as e:
@@ -165,10 +165,10 @@ except Exception as e:
 # Widget: ^E — explain the current buffer command
 # ---------------------------------------------------------------------------
 
-_ctrlk_explain() {
+_cue_explain() {
     local buffer_cmd="$BUFFER"
     if [[ -z "$buffer_cmd" ]]; then
-        zle -R "ctrlk: buffer is empty"
+        zle -R "cue: buffer is empty"
         zle redisplay
         return
     fi
@@ -177,13 +177,13 @@ _ctrlk_explain() {
     zle redisplay
 
     local ctx_json
-    ctx_json="$(_ctrlk_context_json)"
+    ctx_json="$(_cue_context_json)"
     local esc_cmd="${buffer_cmd//\"/\\\"}"
     local req_json
     req_json="$(printf '{"op":"explain","context":%s,"buffer":"%s"}' "$ctx_json" "$esc_cmd")"
 
     local response explanation
-    response="$(_ctrlk_send "$req_json" 2>/dev/null)"
+    response="$(_cue_send "$req_json" 2>/dev/null)"
     explanation="$(python3 -c "
 import json, sys
 try:
@@ -195,7 +195,7 @@ except:
 
     # Show explanation above the prompt line, restore original buffer
     print ""
-    print "ctrlk explain: $explanation"
+    print "cue explain: $explanation"
     BUFFER="$buffer_cmd"
     zle redisplay
 }
@@ -204,12 +204,12 @@ except:
 # Widget: ^F — fix the last failed command
 # ---------------------------------------------------------------------------
 
-_ctrlk_fix_last() {
+_cue_fix_last() {
     local last_cmd="${history[1]}"
-    local last_exit="${CTRLK_LAST_EXIT:-1}"
+    local last_exit="${CUE_LAST_EXIT:-1}"
 
     if [[ -z "$last_cmd" ]]; then
-        zle -R "ctrlk: no last command"
+        zle -R "cue: no last command"
         zle redisplay
         return
     fi
@@ -218,13 +218,13 @@ _ctrlk_fix_last() {
     zle redisplay
 
     local ctx_json
-    ctx_json="$(_ctrlk_context_json)"
+    ctx_json="$(_cue_context_json)"
     local esc_cmd="${last_cmd//\"/\\\"}"
     local req_json
     req_json="$(printf '{"op":"fix_last","context":%s,"buffer":"%s","query":"fix the failed command"}' "$ctx_json" "$esc_cmd")"
 
     local response command
-    response="$(_ctrlk_send "$req_json" 2>/dev/null)"
+    response="$(_cue_send "$req_json" 2>/dev/null)"
     command="$(python3 -c "
 import json, sys
 try:
@@ -244,17 +244,17 @@ except:
 # precmd hook — incrementally index each new command
 # ---------------------------------------------------------------------------
 
-_ctrlk_precmd() {
+_cue_precmd() {
     # Capture exit code before anything else modifies it
-    CTRLK_LAST_EXIT=$?
+    CUE_LAST_EXIT=$?
 
     # Index the most recent command asynchronously (fire and forget)
     local last_cmd="${history[1]}"
-    if [[ -n "$last_cmd" && -S "$CTRLK_SOCKET" ]]; then
+    if [[ -n "$last_cmd" && -S "$CUE_SOCKET" ]]; then
         local esc_cmd="${last_cmd//\"/\\\"}"
         local req_json="$(printf '{"op":"index_cmd","command":"%s"}' "$esc_cmd")"
         # Run in background; ignore output; do not block the prompt
-        ( _ctrlk_send "$req_json" &>/dev/null ) &!
+        ( _cue_send "$req_json" &>/dev/null ) &!
     fi
 }
 
@@ -262,15 +262,15 @@ _ctrlk_precmd() {
 # Register ZLE widgets and key bindings
 # ---------------------------------------------------------------------------
 
-zle -N _ctrlk_generate
-zle -N _ctrlk_explain
-zle -N _ctrlk_fix_last
+zle -N _cue_generate
+zle -N _cue_explain
+zle -N _cue_fix_last
 
 # Default bindings (user can override in config before sourcing this file)
-bindkey "${CTRLK_KEY_GENERATE:-^K}" _ctrlk_generate
-bindkey "${CTRLK_KEY_EXPLAIN:-^E}"  _ctrlk_explain
-bindkey "${CTRLK_KEY_FIX:-^F}"      _ctrlk_fix_last
+bindkey "${CUE_KEY_GENERATE:-^K}" _cue_generate
+bindkey "${CUE_KEY_EXPLAIN:-^E}"  _cue_explain
+bindkey "${CUE_KEY_FIX:-^F}"      _cue_fix_last
 
 # Register precmd hook
 autoload -Uz add-zsh-hook
-add-zsh-hook precmd _ctrlk_precmd
+add-zsh-hook precmd _cue_precmd

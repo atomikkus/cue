@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — Install ctrlk: daemon, shell hooks, default config
+# install.sh — Install cue: daemon, shell hooks, default config
 #
 # Usage:
 #   ./install.sh              # default install (Python from PATH)
@@ -9,12 +9,12 @@
 
 set -euo pipefail
 
-CTRLK_VERSION="0.1.0"
-CTRLK_CONFIG_DIR="${CTRLK_CONFIG_DIR:-${HOME}/.config/ctrlk}"
-CTRLK_VENV_DIR="${CTRLK_CONFIG_DIR}/venv"
-CTRLK_PATH_LINE='export PATH="${HOME}/.config/ctrlk/venv/bin:$PATH"'
-CTRLK_ZSH_HOOK_LINE='source "${HOME}/.config/ctrlk/ctrlk.zsh"'
-CTRLK_DAEMON_LAUNCH_LINE='ctrlk-daemon start &>/dev/null'
+CUE_VERSION="0.1.0"
+CUE_CONFIG_DIR="${CUE_CONFIG_DIR:-${HOME}/.config/cue}"
+CUE_VENV_DIR="${CUE_CONFIG_DIR}/venv"
+CUE_PATH_LINE='export PATH="${HOME}/.config/cue/venv/bin:$PATH"'
+CUE_ZSH_HOOK_LINE='source "${HOME}/.config/cue/cue.zsh"'
+CUE_DAEMON_LAUNCH_LINE='cue-daemon start &>/dev/null'
 ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
 
 PYTHON="${PYTHON:-python3}"
@@ -42,7 +42,7 @@ done
 # Helpers
 # ---------------------------------------------------------------------------
 
-log()  { echo "  [ctrlk] $*"; }
+log()  { echo "  [cue] $*"; }
 ok()   { echo "  ✓ $*"; }
 warn() { echo "  ! $*"; }
 
@@ -61,10 +61,10 @@ require_python() {
 }
 
 daemon_bin() {
-    if [[ -x "${CTRLK_VENV_DIR}/bin/ctrlk-daemon" ]]; then
-        echo "${CTRLK_VENV_DIR}/bin/ctrlk-daemon"
-    elif command -v ctrlk-daemon &>/dev/null; then
-        command -v ctrlk-daemon
+    if [[ -x "${CUE_VENV_DIR}/bin/cue-daemon" ]]; then
+        echo "${CUE_VENV_DIR}/bin/cue-daemon"
+    elif command -v cue-daemon &>/dev/null; then
+        command -v cue-daemon
     fi
 }
 
@@ -73,7 +73,7 @@ daemon_bin() {
 # ---------------------------------------------------------------------------
 
 if [[ "$UNINSTALL" == "true" ]]; then
-    log "Uninstalling ctrlk..."
+    log "Uninstalling cue..."
 
     # Stop daemon (prefer venv binary from a prior install)
     local_daemon="$(daemon_bin || true)"
@@ -84,21 +84,21 @@ if [[ "$UNINSTALL" == "true" ]]; then
     # Remove shell hook lines from .zshrc
     if [[ -f "$ZSHRC" ]]; then
         tmp=$(mktemp)
-        grep -v "ctrlk" "$ZSHRC" > "$tmp" || true
+        grep -v "cue" "$ZSHRC" > "$tmp" || true
         mv "$tmp" "$ZSHRC"
-        ok "Removed ctrlk lines from $ZSHRC"
+        ok "Removed cue lines from $ZSHRC"
     fi
 
     # Remove config dir (ask first)
-    if [[ -d "$CTRLK_CONFIG_DIR" ]]; then
-        read -r -p "  Remove $CTRLK_CONFIG_DIR (venv, cache, config, history index)? [y/N] " confirm
+    if [[ -d "$CUE_CONFIG_DIR" ]]; then
+        read -r -p "  Remove $CUE_CONFIG_DIR (venv, cache, config, history index)? [y/N] " confirm
         if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-            rm -rf "$CTRLK_CONFIG_DIR"
-            ok "Removed $CTRLK_CONFIG_DIR"
+            rm -rf "$CUE_CONFIG_DIR"
+            ok "Removed $CUE_CONFIG_DIR"
         fi
     fi
 
-    ok "ctrlk uninstalled."
+    ok "cue uninstalled."
     exit 0
 fi
 
@@ -107,7 +107,7 @@ fi
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "Installing ctrlk v${CTRLK_VERSION}"
+echo "Installing cue v${CUE_VERSION}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 require_python
@@ -115,35 +115,35 @@ require_python
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # 1. Create config directory
-mkdir -p "$CTRLK_CONFIG_DIR"
-ok "Config dir: $CTRLK_CONFIG_DIR"
+mkdir -p "$CUE_CONFIG_DIR"
+ok "Config dir: $CUE_CONFIG_DIR"
 
 # 2. Install into an isolated venv (avoids PEP 668 on Homebrew/system Python)
-log "Creating virtual environment at ${CTRLK_VENV_DIR}..."
-if [[ ! -x "${CTRLK_VENV_DIR}/bin/python" ]]; then
-    "$PYTHON" -m venv "$CTRLK_VENV_DIR"
+log "Creating virtual environment at ${CUE_VENV_DIR}..."
+if [[ ! -x "${CUE_VENV_DIR}/bin/python" ]]; then
+    "$PYTHON" -m venv "$CUE_VENV_DIR"
 fi
-VENV_PYTHON="${CTRLK_VENV_DIR}/bin/python"
-VENV_PIP="${CTRLK_VENV_DIR}/bin/pip"
+VENV_PYTHON="${CUE_VENV_DIR}/bin/python"
+VENV_PIP="${CUE_VENV_DIR}/bin/pip"
 ok "Virtual environment ready."
 
-log "Installing ctrlk Python package..."
+log "Installing cue Python package..."
 "$VENV_PIP" install --quiet --upgrade pip
 "$VENV_PIP" install --quiet "$SCRIPT_DIR"
-ok "ctrlk package installed in venv."
+ok "cue package installed in venv."
 
 # 3. Write default config (if not exists)
-if [[ ! -f "${CTRLK_CONFIG_DIR}/config.toml" ]]; then
-    "$VENV_PYTHON" -c "from ctrlk.config import load; load()" 2>/dev/null || true
-    ok "Default config written to ${CTRLK_CONFIG_DIR}/config.toml"
+if [[ ! -f "${CUE_CONFIG_DIR}/config.toml" ]]; then
+    "$VENV_PYTHON" -c "from cue.config import load; load()" 2>/dev/null || true
+    ok "Default config written to ${CUE_CONFIG_DIR}/config.toml"
 else
     ok "Config already exists, skipping."
 fi
 
 # 4. Install shell widget from the Python package (always matches installed version)
 log "Installing zsh widget..."
-"$VENV_PYTHON" -m ctrlk.shell_install
-ok "Shell widget installed to ${CTRLK_CONFIG_DIR}/ctrlk.zsh"
+"$VENV_PYTHON" -m cue.shell_install
+ok "Shell widget installed to ${CUE_CONFIG_DIR}/cue.zsh"
 
 # 5. Add to .zshrc if not already present
 add_line_if_missing() {
@@ -151,7 +151,7 @@ add_line_if_missing() {
     local file="$2"
     if ! grep -qF "$line" "$file" 2>/dev/null; then
         echo "" >> "$file"
-        echo "# ctrlk" >> "$file"
+        echo "# cue" >> "$file"
         echo "$line" >> "$file"
         return 0
     fi
@@ -170,20 +170,24 @@ upgrade_zshrc_line() {
 
 if [[ -f "$ZSHRC" || ! -e "$ZSHRC" ]]; then
     touch "$ZSHRC"
-    # Upgrade older installs that used pip --user or background-only daemon start
-    upgrade_zshrc_line '(ctrlk-daemon start &>/dev/null &)' "$CTRLK_DAEMON_LAUNCH_LINE" "$ZSHRC"
-    if add_line_if_missing "$CTRLK_PATH_LINE" "$ZSHRC"; then
-        ok "Added ctrlk venv to PATH in $ZSHRC"
+    # Upgrade older installs (ctrlk rename, pip --user, background-only daemon start)
+    upgrade_zshrc_line 'export PATH="${HOME}/.config/ctrlk/venv/bin:$PATH"' "$CUE_PATH_LINE" "$ZSHRC"
+    upgrade_zshrc_line 'source "${HOME}/.config/ctrlk/ctrlk.zsh"' "$CUE_ZSH_HOOK_LINE" "$ZSHRC"
+    upgrade_zshrc_line '(ctrlk-daemon start &>/dev/null &)' "$CUE_DAEMON_LAUNCH_LINE" "$ZSHRC"
+    upgrade_zshrc_line 'ctrlk-daemon start &>/dev/null' "$CUE_DAEMON_LAUNCH_LINE" "$ZSHRC"
+    upgrade_zshrc_line '(cue-daemon start &>/dev/null &)' "$CUE_DAEMON_LAUNCH_LINE" "$ZSHRC"
+    if add_line_if_missing "$CUE_PATH_LINE" "$ZSHRC"; then
+        ok "Added cue venv to PATH in $ZSHRC"
     else
-        ok "ctrlk PATH already in $ZSHRC"
+        ok "cue PATH already in $ZSHRC"
     fi
-    if add_line_if_missing "$CTRLK_ZSH_HOOK_LINE" "$ZSHRC"; then
+    if add_line_if_missing "$CUE_ZSH_HOOK_LINE" "$ZSHRC"; then
         ok "Added shell hook to $ZSHRC"
     else
         ok "Shell hook already in $ZSHRC"
     fi
     if [[ "$START_DAEMON" == "true" ]]; then
-        if add_line_if_missing "$CTRLK_DAEMON_LAUNCH_LINE" "$ZSHRC"; then
+        if add_line_if_missing "$CUE_DAEMON_LAUNCH_LINE" "$ZSHRC"; then
             ok "Added daemon auto-start to $ZSHRC"
         else
             ok "Daemon auto-start already in $ZSHRC"
@@ -191,14 +195,14 @@ if [[ -f "$ZSHRC" || ! -e "$ZSHRC" ]]; then
     fi
 else
     warn "$ZSHRC is not a regular file. Add these lines manually:"
-    echo "    $CTRLK_PATH_LINE"
-    echo "    $CTRLK_ZSH_HOOK_LINE"
-    [[ "$START_DAEMON" == "true" ]] && echo "    $CTRLK_DAEMON_LAUNCH_LINE"
+    echo "    $CUE_PATH_LINE"
+    echo "    $CUE_ZSH_HOOK_LINE"
+    [[ "$START_DAEMON" == "true" ]] && echo "    $CUE_DAEMON_LAUNCH_LINE"
 fi
 
 # 6. Start the daemon now
 if [[ "$START_DAEMON" == "true" ]]; then
-    log "Starting ctrlk daemon..."
+    log "Starting cue daemon..."
     DAEMON_BIN="$(daemon_bin || true)"
 
     if [[ -n "$DAEMON_BIN" ]]; then
@@ -207,10 +211,10 @@ if [[ "$START_DAEMON" == "true" ]]; then
         if "$DAEMON_BIN" health &>/dev/null 2>&1; then
             ok "Daemon started."
         else
-            warn "Daemon may still be loading. Check with: ctrlk-daemon health"
+            warn "Daemon may still be loading. Check with: cue-daemon health"
         fi
     else
-        warn "ctrlk-daemon not found. Run: ${CTRLK_VENV_DIR}/bin/ctrlk-daemon start"
+        warn "cue-daemon not found. Run: ${CUE_VENV_DIR}/bin/cue-daemon start"
     fi
 fi
 
@@ -220,7 +224,7 @@ fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  ctrlk installed successfully!"
+echo "  cue installed successfully!"
 echo ""
 echo "  Next steps:"
 echo "  1. Set your API key (at least one provider required):"
@@ -231,13 +235,13 @@ echo ""
 echo "  2. Reload your shell:"
 echo "     source ~/.zshrc"
 echo ""
-echo "  3. Verify install:      ctrlk doctor"
+echo "  3. Verify install:      cue doctor"
 echo "  4. Press Ctrl+K at any prompt and type your intent."
-echo "     (In Cursor, rebind if ^K is stolen: export CTRLK_KEY_GENERATE='^X^K')"
+echo "     (In Cursor, rebind if ^K is stolen: export CUE_KEY_GENERATE='^X^K')"
 echo ""
-echo "  Binaries:             ${CTRLK_VENV_DIR}/bin/"
-echo "  Update shell widget:  ctrlk install-shell"
-echo "  Check daemon status:  ctrlk-daemon health"
-echo "  View stats:           ctrlk stats"
-echo "  Reload config:        kill -HUP \$(cat ${CTRLK_CONFIG_DIR}/daemon.pid)"
+echo "  Binaries:             ${CUE_VENV_DIR}/bin/"
+echo "  Update shell widget:  cue install-shell"
+echo "  Check daemon status:  cue-daemon health"
+echo "  View stats:           cue stats"
+echo "  Reload config:        kill -HUP \$(cat ${CUE_CONFIG_DIR}/daemon.pid)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

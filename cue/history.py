@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ctrlk.embedder import embed_batch
-    from ctrlk.store import Store
+    from cue.embedder import embed_batch
+    from cue.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -161,7 +161,7 @@ def index_single_command(
     if not _should_index(command):
         return
     try:
-        from ctrlk.embedder import embed  # noqa: PLC0415
+        from cue.embedder import embed  # noqa: PLC0415
         vec = embed(command, model_name)
         store.history_put(command, vec, source)
     except Exception as exc:

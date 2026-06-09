@@ -55,7 +55,7 @@ coverage.xml
 .DS_Store
 Thumbs.db
 
-# Local runtime (user installs use ~/.config/ctrlk/)
+# Local runtime (user installs use ~/.config/cue/)
 *.sock
 daemon.pid
 *.db

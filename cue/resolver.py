@@ -1,4 +1,4 @@
-"""Tiered resolution engine — the heart of ctrlk.
+"""Tiered resolution engine — the heart of cue.
 
 Tier 0: Exact match (hash lookup, ~3ms)
 Tier 1: Semantic cache (embedding cosine similarity ≥ threshold, ~30ms)
@@ -18,16 +18,16 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ctrlk.context import ShellContext, is_context_sensitive, redact_secrets
-from ctrlk.providers.base import (
+from cue.context import ShellContext, is_context_sensitive, redact_secrets
+from cue.providers.base import (
     DEFAULT_FEW_SHOT,
     SYSTEM_PROMPT,
     GenResult,
     Provider,
     few_shot_to_messages,
 )
-from ctrlk.store import Store, blob_to_vec
-from ctrlk.validator import ValidationResult, validate
+from cue.store import Store, blob_to_vec
+from cue.validator import ValidationResult, validate
 
 log = logging.getLogger(__name__)
 

@@ -1,6 +1,6 @@
 """Configuration loader with TOML schema validation and SIGHUP reload.
 
-All daemon settings live in ~/.config/ctrlk/config.toml.
+All daemon settings live in ~/.config/cue/config.toml.
 The shell widget reads the keybindings section at startup.
 The daemon reads the rest at launch and reloads on SIGHUP.
 """
@@ -22,15 +22,15 @@ else:
     except ImportError:
         import tomli as tomllib  # type: ignore[no-redef]
 
-CONFIG_DIR = Path(os.environ.get("CTRLK_CONFIG_DIR", "~/.config/ctrlk")).expanduser()
+CONFIG_DIR = Path(os.environ.get("CUE_CONFIG_DIR", "~/.config/cue")).expanduser()
 CONFIG_PATH = CONFIG_DIR / "config.toml"
 
 # ---------------------------------------------------------------------------
 # Default config as TOML text (written on first run)
 # ---------------------------------------------------------------------------
 DEFAULT_CONFIG_TOML = """\
-# ctrlk configuration
-# See https://github.com/yourusername/ctrlk for documentation
+# cue configuration
+# See https://github.com/yourusername/cue for documentation
 
 [keys]
 generate = "^K"
@@ -48,7 +48,7 @@ model      = "claude-sonnet-4-6"
 max_tokens = 200
 
 [providers.openrouter]
-# key resolved from CTRLK_OPENROUTER_API_KEY or OPENROUTER_API_KEY
+# key resolved from CUE_OPENROUTER_API_KEY or OPENROUTER_API_KEY
 referer = ""
 
 [providers.custom]
@@ -58,18 +58,18 @@ model    = "qwen2.5-coder:1.5b"
 key      = ""
 
 [providers.anthropic]
-# key resolved from CTRLK_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY
+# key resolved from CUE_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY
 
 [providers.openai]
-# key resolved from CTRLK_OPENAI_API_KEY or OPENAI_API_KEY
+# key resolved from CUE_OPENAI_API_KEY or OPENAI_API_KEY
 
 [providers.mistral]
-# key resolved from CTRLK_MISTRAL_API_KEY or MISTRAL_API_KEY
+# key resolved from CUE_MISTRAL_API_KEY or MISTRAL_API_KEY
 
 [cache]
 similarity_threshold = 0.92
 history_threshold    = 0.88
-db_path = "~/.config/ctrlk/cache.db"
+db_path = "~/.config/cue/cache.db"
 
 [context]
 include_git   = true
@@ -122,7 +122,7 @@ class ProviderSpecificConfig:
 class CacheConfig:
     similarity_threshold: float = 0.92
     history_threshold: float = 0.88
-    db_path: str = "~/.config/ctrlk/cache.db"
+    db_path: str = "~/.config/cue/cache.db"
 
     @property
     def resolved_db_path(self) -> Path:
@@ -218,7 +218,7 @@ def _parse_raw(raw: dict[str, Any]) -> Config:
         cfg.cache = CacheConfig(
             similarity_threshold=float(cache.get("similarity_threshold", 0.92)),
             history_threshold=float(cache.get("history_threshold", 0.88)),
-            db_path=cache.get("db_path", "~/.config/ctrlk/cache.db"),
+            db_path=cache.get("db_path", "~/.config/cue/cache.db"),
         )
 
     if context := raw.get("context"):

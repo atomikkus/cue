@@ -73,7 +73,7 @@ CREATE INDEX IF NOT EXISTS idx_history_freq ON history_index(freq DESC);
 
 
 class Store:
-    """Thread-safe SQLite store for all ctrlk persistence."""
+    """Thread-safe SQLite store for all cue persistence."""
 
     def __init__(self, db_path: Path | str) -> None:
         self.db_path = Path(db_path).expanduser()
@@ -247,7 +247,7 @@ class Store:
             )
 
     def telemetry_stats(self) -> dict:
-        """Aggregate stats for `ctrlk stats` command."""
+        """Aggregate stats for `cue stats` command."""
         rows = self._conn.execute("SELECT tier, COUNT(*) as n, SUM(tokens_in) as ti, SUM(tokens_out) as to_ FROM telemetry GROUP BY tier").fetchall()
         total = sum(r["n"] for r in rows)
         tier_counts = {r["tier"]: r["n"] for r in rows}

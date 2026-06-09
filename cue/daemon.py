@@ -1,8 +1,8 @@
 """Unix domain socket daemon — the warm Python process that lives for the shell session.
 
-Start:  ctrlk-daemon start
-Stop:   ctrlk-daemon stop
-Health: ctrlk-daemon health
+Start:  cue-daemon start
+Stop:   cue-daemon stop
+Health: cue-daemon health
 
 The daemon loads all heavy state (embedding model, SQLite, providers) once at startup.
 The shell widget sends lightweight JSON requests; the daemon replies with JSON + newline.
@@ -27,8 +27,8 @@ from typing import NoReturn
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_SOCKET_PATH = Path(os.environ.get("CTRLK_SOCKET", "~/.config/ctrlk/daemon.sock")).expanduser()
-_DEFAULT_PID_PATH = Path(os.environ.get("CTRLK_PID", "~/.config/ctrlk/daemon.pid")).expanduser()
+_DEFAULT_SOCKET_PATH = Path(os.environ.get("CUE_SOCKET", "~/.config/cue/daemon.sock")).expanduser()
+_DEFAULT_PID_PATH = Path(os.environ.get("CUE_PID", "~/.config/cue/daemon.pid")).expanduser()
 _BACKLOG = 8
 
 
@@ -42,13 +42,13 @@ def _setup_logging(level: str = "WARNING") -> None:
 
 def _build_router():
     """Load all heavy state and return a configured Router instance."""
-    from ctrlk.config import ConfigManager  # noqa: PLC0415
-    from ctrlk import embedder as emb_mod  # noqa: PLC0415
-    from ctrlk.history import ingest_history  # noqa: PLC0415
-    from ctrlk.providers.registry import build_registry  # noqa: PLC0415
-    from ctrlk.resolver import Resolver  # noqa: PLC0415
-    from ctrlk.router import Router  # noqa: PLC0415
-    from ctrlk.store import Store  # noqa: PLC0415
+    from cue.config import ConfigManager  # noqa: PLC0415
+    from cue import embedder as emb_mod  # noqa: PLC0415
+    from cue.history import ingest_history  # noqa: PLC0415
+    from cue.providers.registry import build_registry  # noqa: PLC0415
+    from cue.resolver import Resolver  # noqa: PLC0415
+    from cue.router import Router  # noqa: PLC0415
+    from cue.store import Store  # noqa: PLC0415
 
     config_mgr = ConfigManager()
     cfg = config_mgr.config
@@ -123,7 +123,7 @@ class DaemonServer:
         os.chmod(str(self.socket_path), 0o600)
 
         self._running = True
-        log.info("ctrlk daemon listening on %s", self.socket_path)
+        log.info("cue daemon listening on %s", self.socket_path)
 
         while self._running:
             try:
@@ -210,14 +210,14 @@ def _is_running(pid_path: Path) -> int | None:
 def _run_daemon(socket_path: Path, pid_path: Path, log_level: str) -> NoReturn:
     """Run the daemon process until SIGTERM/SIGINT."""
     _setup_logging(log_level)
-    log.info("Starting ctrlk daemon (pid=%d)", os.getpid())
+    log.info("Starting cue daemon (pid=%d)", os.getpid())
     _write_pid(pid_path)
 
     router = _build_router()
     server = DaemonServer(socket_path, router)
 
     def _shutdown(_sig, _frame):
-        log.info("Shutting down ctrlk daemon.")
+        log.info("Shutting down cue daemon.")
         server.stop()
         pid_path.unlink(missing_ok=True)
         sys.exit(0)
@@ -260,7 +260,7 @@ def _daemon_argv(
     argv = [
         sys.executable,
         "-m",
-        "ctrlk.daemon",
+        "cue.daemon",
         "start",
         "--socket",
         str(socket_path),
@@ -278,13 +278,13 @@ def _cmd_start(socket_path: Path, pid_path: Path, log_level: str, *, foreground:
     """Start the daemon. Returns to the shell unless --foreground is set."""
     running = _is_running(pid_path)
     if running is not None:
-        print(f"ctrlk daemon already running (pid={running}).")
+        print(f"cue daemon already running (pid={running}).")
         return
 
     if foreground:
         _run_daemon(socket_path, pid_path, log_level)
 
-    print("Starting ctrlk daemon...")
+    print("Starting cue daemon...")
     # subprocess spawn — safe on macOS (os.fork() crashes Python after ObjC init)
     proc = subprocess.Popen(
         _daemon_argv(socket_path, pid_path, log_level, foreground=True),
@@ -295,26 +295,26 @@ def _cmd_start(socket_path: Path, pid_path: Path, log_level: str, *, foreground:
 
     if _wait_for_socket(socket_path):
         ready_pid = _read_pid(pid_path)
-        print(f"ctrlk daemon ready (pid={ready_pid}).")
+        print(f"cue daemon ready (pid={ready_pid}).")
         return
 
     if proc.poll() is not None:
-        print(f"ctrlk daemon failed to start (exit code={proc.returncode}).")
-        print("Run with logs visible: ctrlk-daemon start --foreground")
+        print(f"cue daemon failed to start (exit code={proc.returncode}).")
+        print("Run with logs visible: cue-daemon start --foreground")
         sys.exit(1)
 
-    print("ctrlk daemon is still starting (embedding model may be loading).")
-    print("Check status with: ctrlk-daemon health")
+    print("cue daemon is still starting (embedding model may be loading).")
+    print("Check status with: cue-daemon health")
 
 
 def _cmd_stop(pid_path: Path) -> None:
     pid = _read_pid(pid_path)
     if pid is None:
-        print("ctrlk daemon is not running (no PID file).")
+        print("cue daemon is not running (no PID file).")
         return
     try:
         os.kill(pid, signal.SIGTERM)
-        print(f"Sent SIGTERM to ctrlk daemon (pid={pid}).")
+        print(f"Sent SIGTERM to cue daemon (pid={pid}).")
     except ProcessLookupError:
         print(f"No process with pid={pid}; cleaning up PID file.")
         pid_path.unlink(missing_ok=True)
@@ -329,19 +329,19 @@ def _cmd_health(socket_path: Path) -> None:
             data = s.recv(4096)
         resp = json.loads(data.decode().strip())
         if resp.get("ok"):
-            print(f"ctrlk daemon OK  uptime={resp.get('uptime_seconds')}s  history={resp.get('history_entries')} entries")
+            print(f"cue daemon OK  uptime={resp.get('uptime_seconds')}s  history={resp.get('history_entries')} entries")
         else:
             print(f"Daemon error: {resp.get('error')}")
             sys.exit(1)
     except Exception as exc:
-        print(f"ctrlk daemon unreachable: {exc}")
+        print(f"cue daemon unreachable: {exc}")
         sys.exit(1)
 
 
 def main(argv: list[str] | None = None) -> None:
     import argparse  # noqa: PLC0415
 
-    ap = argparse.ArgumentParser(prog="ctrlk-daemon", description="ctrlk background daemon")
+    ap = argparse.ArgumentParser(prog="cue-daemon", description="cue background daemon")
     ap.add_argument("command", choices=["start", "stop", "health", "restart"],
                     nargs="?", default="start")
     ap.add_argument("--socket", default=str(_DEFAULT_SOCKET_PATH), help="Socket path")

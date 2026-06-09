@@ -1,14 +1,14 @@
-"""ctrlk CLI entry point.
+"""cue CLI entry point.
 
 Usage:
-  ctrlk                 -- generate a command interactively (terminal mode)
-  ctrlk stats           -- show hit rates and token usage
-  ctrlk health          -- check daemon status
-  ctrlk daemon start    -- start the background daemon
-  ctrlk daemon stop     -- stop the background daemon
-  ctrlk reindex         -- rebuild the history embedding index
-  ctrlk install-shell   -- install/update the zsh widget from the package
-  ctrlk doctor          -- verify install, daemon, and keybindings
+  cue                 -- generate a command interactively (terminal mode)
+  cue stats           -- show hit rates and token usage
+  cue health          -- check daemon status
+  cue daemon start    -- start the background daemon
+  cue daemon stop     -- stop the background daemon
+  cue reindex         -- rebuild the history embedding index
+  cue install-shell   -- install/update the zsh widget from the package
+  cue doctor          -- verify install, daemon, and keybindings
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import socket
 import sys
 from pathlib import Path
 
-_SOCKET_PATH = Path(os.environ.get("CTRLK_SOCKET", "~/.config/ctrlk/daemon.sock")).expanduser()
+_SOCKET_PATH = Path(os.environ.get("CUE_SOCKET", "~/.config/cue/daemon.sock")).expanduser()
 
 
 def _send_request(request: dict, timeout: float = 15.0) -> dict:
@@ -39,7 +39,7 @@ def _send_request(request: dict, timeout: float = 15.0) -> dict:
                     break
         return json.loads(data.decode("utf-8").strip())
     except FileNotFoundError:
-        return {"ok": False, "error": "Daemon socket not found. Run: ctrlk-daemon start"}
+        return {"ok": False, "error": "Daemon socket not found. Run: cue-daemon start"}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -57,7 +57,7 @@ def _cmd_stats() -> None:
     tokens_out = stats.get("total_tokens_out", 0)
     history = stats.get("history_entries", 0)
 
-    print("ctrlk stats")
+    print("cue stats")
     print("─" * 40)
     print(f"  Total queries:     {total}")
     print(f"  Local hit rate:    {hit_rate:.1%}  (Tier 0/1/2 — zero API cost)")
@@ -72,7 +72,7 @@ def _cmd_stats() -> None:
 def _cmd_health() -> None:
     resp = _send_request({"op": "health"})
     if resp.get("ok"):
-        print(f"ctrlk daemon OK  uptime={resp.get('uptime_seconds')}s  history={resp.get('history_entries')} entries")
+        print(f"cue daemon OK  uptime={resp.get('uptime_seconds')}s  history={resp.get('history_entries')} entries")
     else:
         print(f"Error: {resp.get('error')}", file=sys.stderr)
         sys.exit(1)
@@ -117,14 +117,14 @@ def _cmd_generate(query: str) -> None:
 def _cmd_reindex() -> None:
     """Rebuild the history index (runs in the daemon process)."""
     print("Reindex is performed by the daemon on startup.")
-    print("To force: stop the daemon, delete ~/.config/ctrlk/cache.db, restart.")
+    print("To force: stop the daemon, delete ~/.config/cue/cache.db, restart.")
 
 
 def main(argv: list[str] | None = None) -> None:
     args = (argv or sys.argv)[1:]
 
     if not args:
-        print("Usage: ctrlk <command>")
+        print("Usage: cue <command>")
         print("Commands: stats, health, generate <query>, daemon, reindex, install-shell, doctor")
         sys.exit(0)
 
@@ -137,22 +137,22 @@ def main(argv: list[str] | None = None) -> None:
     elif cmd == "generate":
         query = " ".join(args[1:])
         if not query:
-            print("Usage: ctrlk generate <natural language query>", file=sys.stderr)
+            print("Usage: cue generate <natural language query>", file=sys.stderr)
             sys.exit(1)
         _cmd_generate(query)
     elif cmd == "daemon":
         # Forward to daemon CLI
-        from ctrlk.daemon import main as daemon_main  # noqa: PLC0415
+        from cue.daemon import main as daemon_main  # noqa: PLC0415
         daemon_main(args[1:])
     elif cmd == "reindex":
         _cmd_reindex()
     elif cmd == "install-shell":
-        from ctrlk.shell_install import install_shell_widget  # noqa: PLC0415
+        from cue.shell_install import install_shell_widget  # noqa: PLC0415
         dest = install_shell_widget()
         print(f"Installed shell widget: {dest}")
         print("Reload your shell:  source ~/.zshrc")
     elif cmd == "doctor":
-        from ctrlk.shell_install import run_doctor  # noqa: PLC0415
+        from cue.shell_install import run_doctor  # noqa: PLC0415
         sys.exit(run_doctor())
     else:
         # Treat as implicit "generate"

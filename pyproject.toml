@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ctrlk"
+name = "cue"
 version = "0.1.0"
-description = "AI-native terminal Ctrl+K: natural language to shell commands, in your buffer."
+description = "Cue: AI-native terminal Ctrl+K — natural language to shell commands, in your buffer."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -28,11 +28,11 @@ dev = [
 ]
 
 [project.scripts]
-ctrlk = "ctrlk.__main__:main"
-ctrlk-daemon = "ctrlk.daemon:main"
+cue = "cue.__main__:main"
+cue-daemon = "cue.daemon:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["ctrlk"]
+packages = ["cue"]
 
 [tool.ruff]
 line-length = 100

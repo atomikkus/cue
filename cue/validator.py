@@ -4,7 +4,7 @@ INVARIANT: This module NEVER blocks a command from reaching the buffer.
 Dangerous commands receive a visible ⚠ prefix so the user sees them before
 pressing Enter. The decision to execute always belongs to the user.
 
-BUFFER-ALWAYS: There is no code path in ctrlk that calls zle accept-line or
+BUFFER-ALWAYS: There is no code path in cue that calls zle accept-line or
 any equivalent. Commands are placed in the ZLE buffer and nothing more.
 """
 

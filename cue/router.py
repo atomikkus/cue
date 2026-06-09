@@ -17,10 +17,10 @@ import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ctrlk.config import Config
-    from ctrlk.context import ShellContext
-    from ctrlk.resolver import Resolver
-    from ctrlk.store import Store
+    from cue.config import Config
+    from cue.context import ShellContext
+    from cue.resolver import Resolver
+    from cue.store import Store
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ class Router:
         if not query:
             return {"ok": False, "error": "Empty query"}
 
-        from ctrlk.context import from_client_payload  # noqa: PLC0415
+        from cue.context import from_client_payload  # noqa: PLC0415
         context = from_client_payload(request.get("context", {}))
         context.query = query
 
@@ -88,7 +88,7 @@ class Router:
 
     def _handle_explain(self, request: dict) -> dict:
         """Explain the current buffer command in plain English."""
-        from ctrlk.context import from_client_payload  # noqa: PLC0415
+        from cue.context import from_client_payload  # noqa: PLC0415
         context = from_client_payload(request.get("context", {}))
         buffer = context.buffer or request.get("buffer", "")
         if not buffer:
@@ -102,7 +102,7 @@ class Router:
 
     def _handle_fix_last(self, request: dict) -> dict:
         """Fix the last failed command."""
-        from ctrlk.context import from_client_payload  # noqa: PLC0415
+        from cue.context import from_client_payload  # noqa: PLC0415
         context = from_client_payload(request.get("context", {}))
         if not context.buffer:
             return {"ok": False, "error": "No last command to fix"}
@@ -119,7 +119,7 @@ class Router:
         if not command:
             return {"ok": True, "indexed": False}
 
-        from ctrlk.history import index_single_command  # noqa: PLC0415
+        from cue.history import index_single_command  # noqa: PLC0415
         index_single_command(
             command,
             self.store,

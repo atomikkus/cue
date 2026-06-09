@@ -8,9 +8,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ctrlk.providers.base import GenResult, SYSTEM_PROMPT, DEFAULT_FEW_SHOT, few_shot_to_messages
-from ctrlk.providers.anthropic import AnthropicProvider
-from ctrlk.providers.openai_compat import OpenAICompatProvider
+from cue.providers.base import GenResult, SYSTEM_PROMPT, DEFAULT_FEW_SHOT, few_shot_to_messages
+from cue.providers.anthropic import AnthropicProvider
+from cue.providers.openai_compat import OpenAICompatProvider
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -88,7 +88,7 @@ class TestAnthropicProvider:
             # Ensure env vars are not set
             import os
             os.environ.pop("ANTHROPIC_API_KEY", None)
-            os.environ.pop("CTRLK_ANTHROPIC_API_KEY", None)
+            os.environ.pop("CUE_ANTHROPIC_API_KEY", None)
             result = provider.generate(SYSTEM_PROMPT, few_shot, "test", model="test")
 
         assert isinstance(result, GenResult)
@@ -159,7 +159,7 @@ class TestOpenAICompatProvider:
             "https://openrouter.ai/api/v1",
             "sk-or-test",
             "openrouter",
-            extra_headers={"HTTP-Referer": "https://example.com", "X-Title": "ctrlk"},
+            extra_headers={"HTTP-Referer": "https://example.com", "X-Title": "cue"},
         )
 
     def test_openai_parses_fixture(self):
@@ -266,7 +266,7 @@ class TestOpenAICompatProvider:
             provider.generate(SYSTEM_PROMPT, [], "test", model="m")
 
         assert captured_headers.get("HTTP-Referer") == "https://example.com"
-        assert captured_headers.get("X-Title") == "ctrlk"
+        assert captured_headers.get("X-Title") == "cue"
 
     def test_empty_choices_returns_empty_text(self):
         mock_resp = MagicMock()

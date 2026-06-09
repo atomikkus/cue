@@ -4,7 +4,7 @@ All tests use no network calls and no LLM.
 """
 
 import pytest
-from ctrlk.validator import validate, ValidationResult
+from cue.validator import validate, ValidationResult
 
 
 # ---------------------------------------------------------------------------
