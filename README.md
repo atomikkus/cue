@@ -36,6 +36,16 @@ source ~/.zshrc
 
 No manual `pip install` or `~/.local/bin` setup needed — the installer handles the venv for you.
 
+After install, verify everything:
+
+```bash
+source ~/.zshrc
+ctrlk doctor
+ctrlk generate "list files here"
+```
+
+`ctrlk doctor` checks the daemon, shell widget, zsh hooks, and Ctrl+K binding.
+
 ### Install options
 
 ```bash
@@ -74,6 +84,8 @@ Keybindings are configurable in `~/.config/ctrlk/config.toml` under `[keys]`.
 ## CLI
 
 ```bash
+ctrlk install-shell         # install/update zsh widget from the Python package
+ctrlk doctor                # verify daemon, widget, hooks, and keybindings
 ctrlk-daemon start          # start in background (returns to shell when ready)
 ctrlk-daemon start -f       # foreground mode for debugging (blocks terminal)
 ctrlk-daemon stop           # stop the daemon
@@ -82,6 +94,8 @@ ctrlk health                # same, via main CLI
 ctrlk stats                 # hit rates, tier breakdown, token usage
 ctrlk generate "list git branches"   # test from the terminal
 ```
+
+Re-run `ctrlk install-shell` after upgrading the package to refresh the zsh widget without a full reinstall.
 
 Reload config without restarting:
 

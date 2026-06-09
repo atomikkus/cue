@@ -140,8 +140,9 @@ else
     ok "Config already exists, skipping."
 fi
 
-# 4. Install shell widget
-cp "${SCRIPT_DIR}/shell/ctrlk.zsh" "${CTRLK_CONFIG_DIR}/ctrlk.zsh"
+# 4. Install shell widget from the Python package (always matches installed version)
+log "Installing zsh widget..."
+"$VENV_PYTHON" -m ctrlk.shell_install
 ok "Shell widget installed to ${CTRLK_CONFIG_DIR}/ctrlk.zsh"
 
 # 5. Add to .zshrc if not already present
@@ -157,8 +158,20 @@ add_line_if_missing() {
     return 1
 }
 
+upgrade_zshrc_line() {
+    local old="$1" new="$2" file="$3"
+    if [[ -f "$file" ]] && grep -qF "$old" "$file" 2>/dev/null; then
+        tmp=$(mktemp)
+        sed "s|$(printf '%s' "$old" | sed 's/[&/\]/\\&/g')|$(printf '%s' "$new" | sed 's/[&/\]/\\&/g')|g" "$file" > "$tmp"
+        mv "$tmp" "$file"
+        ok "Updated stale hook in $file"
+    fi
+}
+
 if [[ -f "$ZSHRC" || ! -e "$ZSHRC" ]]; then
     touch "$ZSHRC"
+    # Upgrade older installs that used pip --user or background-only daemon start
+    upgrade_zshrc_line '(ctrlk-daemon start &>/dev/null &)' "$CTRLK_DAEMON_LAUNCH_LINE" "$ZSHRC"
     if add_line_if_missing "$CTRLK_PATH_LINE" "$ZSHRC"; then
         ok "Added ctrlk venv to PATH in $ZSHRC"
     else
@@ -190,8 +203,7 @@ if [[ "$START_DAEMON" == "true" ]]; then
 
     if [[ -n "$DAEMON_BIN" ]]; then
         "$DAEMON_BIN" stop 2>/dev/null || true
-        "$DAEMON_BIN" start &>/dev/null &
-        sleep 1
+        "$DAEMON_BIN" start
         if "$DAEMON_BIN" health &>/dev/null 2>&1; then
             ok "Daemon started."
         else
@@ -219,9 +231,12 @@ echo ""
 echo "  2. Reload your shell:"
 echo "     source ~/.zshrc"
 echo ""
-echo "  3. Press Ctrl+K at any prompt and type your intent."
+echo "  3. Verify install:      ctrlk doctor"
+echo "  4. Press Ctrl+K at any prompt and type your intent."
+echo "     (In Cursor, rebind if ^K is stolen: export CTRLK_KEY_GENERATE='^X^K')"
 echo ""
 echo "  Binaries:             ${CTRLK_VENV_DIR}/bin/"
+echo "  Update shell widget:  ctrlk install-shell"
 echo "  Check daemon status:  ctrlk-daemon health"
 echo "  View stats:           ctrlk stats"
 echo "  Reload config:        kill -HUP \$(cat ${CTRLK_CONFIG_DIR}/daemon.pid)"

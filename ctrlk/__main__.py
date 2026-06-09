@@ -7,6 +7,8 @@ Usage:
   ctrlk daemon start    -- start the background daemon
   ctrlk daemon stop     -- stop the background daemon
   ctrlk reindex         -- rebuild the history embedding index
+  ctrlk install-shell   -- install/update the zsh widget from the package
+  ctrlk doctor          -- verify install, daemon, and keybindings
 """
 
 from __future__ import annotations
@@ -123,7 +125,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if not args:
         print("Usage: ctrlk <command>")
-        print("Commands: stats, health, generate <query>, daemon, reindex")
+        print("Commands: stats, health, generate <query>, daemon, reindex, install-shell, doctor")
         sys.exit(0)
 
     cmd = args[0]
@@ -144,6 +146,14 @@ def main(argv: list[str] | None = None) -> None:
         daemon_main(args[1:])
     elif cmd == "reindex":
         _cmd_reindex()
+    elif cmd == "install-shell":
+        from ctrlk.shell_install import install_shell_widget  # noqa: PLC0415
+        dest = install_shell_widget()
+        print(f"Installed shell widget: {dest}")
+        print("Reload your shell:  source ~/.zshrc")
+    elif cmd == "doctor":
+        from ctrlk.shell_install import run_doctor  # noqa: PLC0415
+        sys.exit(run_doctor())
     else:
         # Treat as implicit "generate"
         query = " ".join(args)
