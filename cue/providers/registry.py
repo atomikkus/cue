@@ -13,53 +13,18 @@ the provider's own HTTPS endpoint.
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING
+
+from cue.keys import resolve_key
 
 from .anthropic import AnthropicProvider
 from .base import Provider
 from .openai_compat import OpenAICompatProvider
 
 if TYPE_CHECKING:
-    from cue.config import Config, ProviderSpecificConfig
+    from cue.config import Config
 
 log = logging.getLogger(__name__)
-
-# Canonical env var fallbacks per provider
-_ENV_FALLBACKS: dict[str, str] = {
-    "anthropic": "ANTHROPIC_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "mistral": "MISTRAL_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY",
-}
-
-
-def _resolve_key(provider_name: str, config_key: str) -> str:
-    """Resolve API key using the documented priority order."""
-    # 1. CUE-prefixed env var
-    cue_var = f"CUE_{provider_name.upper()}_API_KEY"
-    if val := os.environ.get(cue_var):
-        return val
-
-    # 2. Canonical provider env var
-    if canonical := _ENV_FALLBACKS.get(provider_name):
-        if val := os.environ.get(canonical):
-            return val
-
-    # 3. Config file value
-    if config_key:
-        return config_key
-
-    # 4. OS keychain (best-effort)
-    try:
-        import keyring  # type: ignore[import]
-        val = keyring.get_password("cue", provider_name)
-        if val:
-            return val
-    except Exception:
-        pass
-
-    return ""
 
 
 def build_registry(config: "Config") -> dict[str, Provider]:
@@ -71,12 +36,12 @@ def build_registry(config: "Config") -> dict[str, Provider]:
 
     # Anthropic
     anthro_cfg = config.get_provider_config("anthropic")
-    key = _resolve_key("anthropic", anthro_cfg.key)
+    key = resolve_key("anthropic", anthro_cfg.key)
     providers["anthropic"] = AnthropicProvider(api_key=key)
 
     # OpenAI
     oai_cfg = config.get_provider_config("openai")
-    key = _resolve_key("openai", oai_cfg.key)
+    key = resolve_key("openai", oai_cfg.key)
     providers["openai"] = OpenAICompatProvider(
         base_url="https://api.openai.com/v1",
         api_key=key,
@@ -85,7 +50,7 @@ def build_registry(config: "Config") -> dict[str, Provider]:
 
     # Mistral
     mistral_cfg = config.get_provider_config("mistral")
-    key = _resolve_key("mistral", mistral_cfg.key)
+    key = resolve_key("mistral", mistral_cfg.key)
     providers["mistral"] = OpenAICompatProvider(
         base_url="https://api.mistral.ai/v1",
         api_key=key,
@@ -94,7 +59,7 @@ def build_registry(config: "Config") -> dict[str, Provider]:
 
     # OpenRouter
     or_cfg = config.get_provider_config("openrouter")
-    key = _resolve_key("openrouter", or_cfg.key)
+    key = resolve_key("openrouter", or_cfg.key)
     extra_headers: dict[str, str] = {"X-Title": "cue"}
     if or_cfg.referer:
         extra_headers["HTTP-Referer"] = or_cfg.referer
@@ -108,7 +73,7 @@ def build_registry(config: "Config") -> dict[str, Provider]:
     # Custom (Ollama, vLLM, LocalAI, etc.)
     custom_cfg = config.get_provider_config("custom")
     if custom_cfg.base_url:
-        key = _resolve_key("custom", custom_cfg.key)
+        key = resolve_key("custom", custom_cfg.key)
         providers["custom"] = OpenAICompatProvider(
             base_url=custom_cfg.base_url,
             api_key=key,

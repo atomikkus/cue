@@ -15,6 +15,7 @@ dependencies = [
     "httpx>=0.27.0",
     "keyring>=24.0.0",
     "rich>=13.0.0",
+    "tomli-w>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +32,9 @@ cue-daemon = "cue.daemon:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["cue"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"cue/shell/cue.zsh" = "cue/shell/cue.zsh"
 
 [tool.ruff]
 line-length = 100

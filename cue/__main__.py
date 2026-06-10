@@ -7,6 +7,11 @@ Usage:
   cue daemon start    -- start the background daemon
   cue daemon stop     -- stop the background daemon
   cue reindex         -- rebuild the history embedding index
+  cue setup           -- interactive provider, key, and model setup
+  cue config show     -- show config and key status (redacted)
+  cue config set ...  -- update a config value
+  cue key list        -- list API key sources per provider
+  cue key set ...     -- store API key in OS keychain
   cue install-shell   -- install/update the zsh widget from the package
   cue doctor          -- verify install, daemon, and keybindings
 """
@@ -140,7 +145,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if not args:
         print("Usage: cue <command>")
-        print("Commands: stats, health, generate <query>, daemon, reindex, reload, install-shell, doctor")
+        print("Commands: setup, config, key, stats, health, generate, daemon, reindex, reload, install-shell, doctor")
         sys.exit(0)
 
     cmd = args[0]
@@ -164,6 +169,15 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_reindex(force=force)
     elif cmd == "reload":
         _cmd_reload()
+    elif cmd == "setup":
+        from cue.cli_setup import run_setup  # noqa: PLC0415
+        sys.exit(run_setup())
+    elif cmd == "config":
+        from cue.cli_setup import main_config  # noqa: PLC0415
+        sys.exit(main_config(args[1:]))
+    elif cmd == "key":
+        from cue.cli_setup import main_key  # noqa: PLC0415
+        sys.exit(main_key(args[1:]))
     elif cmd == "install-shell":
         from cue.shell_install import install_shell_widget  # noqa: PLC0415
         dest = install_shell_widget()
