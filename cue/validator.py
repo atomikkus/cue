@@ -35,8 +35,8 @@ _DANGER_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("overwrites sensitive system file", re.compile(r">\s*/etc/(passwd|shadow|sudoers)")),
     # Recursively delete everything under a common dangerous path
     ("recursive delete of important path", re.compile(r"\brm\b.*-[a-zA-Z]*r[a-zA-Z]*\s+~\s*$|\brm\b.*-[a-zA-Z]*r[a-zA-Z]*\s+~/")),
-    # chmod 777 on /
-    ("dangerous chmod on root", re.compile(r"\bchmod\b.*777.*/")),
+    # chmod 777 on filesystem root (not relative paths like ./foo)
+    ("dangerous chmod on root", re.compile(r"\bchmod\b.*777\s+/(?:\s|$)")),
     # kill all processes
     ("kills all processes", re.compile(r"\bkillall\b\s+-9\s+init|\bkill\b\s+-9\s+-1")),
     # Wipe MBR/boot sector

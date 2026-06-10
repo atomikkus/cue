@@ -343,6 +343,10 @@ class TestContextSensitivity:
         assert not is_context_sensitive("find all python files recursively")
         assert not is_context_sensitive("compress a directory to tar gz")
 
+    def test_my_ip_not_context_sensitive(self):
+        from cue.context import is_context_sensitive
+        assert not is_context_sensitive("show my ip")
+
     def test_context_bucket_hash_consistent(self):
         ctx = _make_context()
         h1 = ctx.context_bucket_hash()
@@ -359,6 +363,67 @@ class TestContextSensitivity:
 # ---------------------------------------------------------------------------
 # Danger scan integration in resolver
 # ---------------------------------------------------------------------------
+
+class TestOpCacheGating:
+    def test_explain_does_not_write_cache(self, tmp_path):
+        store = _make_store(tmp_path)
+        embedder = _make_mock_embedder()
+        embedder.top_k_similar.return_value = []
+        provider = _make_mock_provider("This lists files in the directory.")
+        resolver = _make_resolver(store, embedder, provider)
+
+        ctx = _make_context()
+        ctx.buffer = "ls -la"
+        resolver.resolve("Explain what this command does: ls -la", ctx, op="explain")
+
+        assert store.exact_get(_normalize("Explain what this command does: ls -la")) is None
+        assert len(store.semantic_get_all()) == 0
+        provider.generate.assert_called_once()
+
+    def test_fix_last_does_not_write_cache(self, tmp_path):
+        store = _make_store(tmp_path)
+        embedder = _make_mock_embedder()
+        embedder.top_k_similar.return_value = []
+        provider = _make_mock_provider("git push --set-upstream origin main")
+        resolver = _make_resolver(store, embedder, provider)
+
+        ctx = _make_context()
+        ctx.buffer = "git push"
+        resolver.resolve("fix the failed command: git push", ctx, op="fix_last")
+
+        assert store.exact_get(_normalize("fix the failed command: git push")) is None
+        assert len(store.semantic_get_all()) == 0
+
+    def test_explain_skips_danger_prefix(self, tmp_path):
+        store = _make_store(tmp_path)
+        embedder = _make_mock_embedder()
+        embedder.top_k_similar.return_value = []
+        provider = _make_mock_provider("Runs rm -rf / to delete everything.")
+        resolver = _make_resolver(store, embedder, provider)
+
+        ctx = _make_context()
+        ctx.buffer = "rm -rf /"
+        result = resolver.resolve("explain", ctx, op="explain")
+
+        assert not result.command.startswith("⚠")
+
+
+class TestRedactionInResolver:
+    def test_query_redacted_in_provider_payload(self, tmp_path):
+        store = _make_store(tmp_path)
+        embedder = _make_mock_embedder()
+        embedder.top_k_similar.return_value = []
+        provider = _make_mock_provider("ls")
+        resolver = _make_resolver(store, embedder, provider)
+
+        secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
+        ctx = _make_context()
+        resolver.resolve(f"list files with key {secret}", ctx, op="generate")
+
+        user_msg = provider.generate.call_args[0][2]
+        assert secret not in user_msg
+        assert "[REDACTED_KEY]" in user_msg
+
 
 class TestDangerInResolver:
     def test_dangerous_command_gets_warning_prefix(self, tmp_path):

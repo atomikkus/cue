@@ -8,19 +8,17 @@ One adapter parameterised by base_url, api_key, and extra_headers covers all of 
 
 from __future__ import annotations
 
-import json
-import os
-from typing import Iterator
-
 import httpx
 
 from .base import GenResult
+
+_HTTP_TIMEOUT = 45.0
 
 
 class OpenAICompatProvider:
     """Generic OpenAI /chat/completions adapter."""
 
-    supports_prompt_caching = True  # Best-effort; silently ignored if unsupported
+    supports_prompt_caching = True
 
     def __init__(
         self,
@@ -34,10 +32,6 @@ class OpenAICompatProvider:
         self.name = name
         self.extra_headers = extra_headers or {}
 
-    # ------------------------------------------------------------------
-    # Public interface (satisfies Provider protocol)
-    # ------------------------------------------------------------------
-
     def generate(
         self,
         system: str,
@@ -48,7 +42,8 @@ class OpenAICompatProvider:
         max_tokens: int = 100,
         stop: list[str] | None = None,
         stream: bool = False,
-    ) -> GenResult | Iterator[str]:
+    ) -> GenResult:
+        del stream
         messages = [{"role": "system", "content": system}]
         messages.extend(few_shot)
         messages.append({"role": "user", "content": user})
@@ -60,8 +55,6 @@ class OpenAICompatProvider:
         }
         if stop:
             payload["stop"] = stop
-        if stream:
-            payload["stream"] = True
 
         headers = {
             "content-type": "application/json",
@@ -71,19 +64,11 @@ class OpenAICompatProvider:
             headers["authorization"] = f"Bearer {self.api_key}"
 
         url = f"{self.base_url}/chat/completions"
-
-        if stream:
-            return self._stream(url, payload, headers, model)
-
         return self._complete(url, payload, headers, model)
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _complete(self, url: str, payload: dict, headers: dict, model: str) -> GenResult:
         try:
-            with httpx.Client(timeout=30.0) as client:
+            with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
                 resp = client.post(url, json=payload, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
@@ -102,7 +87,6 @@ class OpenAICompatProvider:
 
         text = self._extract_text(data)
         usage = data.get("usage", {})
-        # Some providers (OpenRouter) report cached tokens under prompt_tokens_details
         cached = (
             usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
             or usage.get("cached_tokens", 0)
@@ -115,30 +99,6 @@ class OpenAICompatProvider:
             model=data.get("model", model),
             provider=self.name,
         )
-
-    def _stream(self, url: str, payload: dict, headers: dict, model: str) -> Iterator[str]:
-        try:
-            with httpx.Client(timeout=60.0) as client:
-                with client.stream("POST", url, json=payload, headers=headers) as resp:
-                    resp.raise_for_status()
-                    for line in resp.iter_lines():
-                        if not line or not line.startswith("data: "):
-                            continue
-                        chunk = line[6:]
-                        if chunk == "[DONE]":
-                            break
-                        try:
-                            event = json.loads(chunk)
-                        except json.JSONDecodeError:
-                            continue
-                        choices = event.get("choices", [])
-                        if choices:
-                            delta = choices[0].get("delta", {})
-                            content = delta.get("content")
-                            if content:
-                                yield content
-        except Exception:
-            return
 
     @staticmethod
     def _extract_text(data: dict) -> str:

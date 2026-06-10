@@ -114,10 +114,25 @@ def _cmd_generate(query: str) -> None:
         sys.exit(1)
 
 
-def _cmd_reindex() -> None:
-    """Rebuild the history index (runs in the daemon process)."""
-    print("Reindex is performed by the daemon on startup.")
-    print("To force: stop the daemon, delete ~/.config/cue/cache.db, restart.")
+def _cmd_reindex(*, force: bool = False) -> None:
+    """Rebuild the history index via the running daemon."""
+    resp = _send_request({"op": "reindex", "force": force}, timeout=120.0)
+    if not resp.get("ok"):
+        print(f"Error: {resp.get('error')}", file=sys.stderr)
+        sys.exit(1)
+    count = resp.get("indexed", 0)
+    label = "reindexed" if force else "newly indexed"
+    print(f"History {label}: {count} command(s)")
+
+
+def _cmd_reload() -> None:
+    """Reload daemon config (SIGHUP-equivalent)."""
+    resp = _send_request({"op": "reload"})
+    if resp.get("ok"):
+        print(resp.get("message", "Config reloaded."))
+    else:
+        print(f"Error: {resp.get('error')}", file=sys.stderr)
+        sys.exit(1)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -125,7 +140,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if not args:
         print("Usage: cue <command>")
-        print("Commands: stats, health, generate <query>, daemon, reindex, install-shell, doctor")
+        print("Commands: stats, health, generate <query>, daemon, reindex, reload, install-shell, doctor")
         sys.exit(0)
 
     cmd = args[0]
@@ -145,7 +160,10 @@ def main(argv: list[str] | None = None) -> None:
         from cue.daemon import main as daemon_main  # noqa: PLC0415
         daemon_main(args[1:])
     elif cmd == "reindex":
-        _cmd_reindex()
+        force = "--force" in args[1:]
+        _cmd_reindex(force=force)
+    elif cmd == "reload":
+        _cmd_reload()
     elif cmd == "install-shell":
         from cue.shell_install import install_shell_widget  # noqa: PLC0415
         dest = install_shell_widget()

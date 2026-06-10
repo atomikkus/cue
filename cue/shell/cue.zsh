@@ -10,28 +10,30 @@
 # ---------------------------------------------------------------------------
 
 CUE_SOCKET="${CUE_SOCKET:-${HOME}/.config/cue/daemon.sock}"
-CUE_TIMEOUT="${CUE_TIMEOUT:-15}"
+CUE_TIMEOUT="${CUE_TIMEOUT:-45}"
 
 # ---------------------------------------------------------------------------
-# Internal: send a JSON request to the daemon, return raw response
+# Internal: Python helpers for JSON socket I/O
 # ---------------------------------------------------------------------------
+
+_cue_python() {
+    python3 "$@"
+}
 
 _cue_send() {
-    # Usage: _cue_send '<json>'
+    # Usage: _cue_send <json-string>
     # Writes daemon response to stdout. Returns 1 on failure.
     local json="$1"
     if [[ ! -S "$CUE_SOCKET" ]]; then
         print -u2 "cue: daemon socket not found (${CUE_SOCKET}). Run: cue-daemon start"
         return 1
     fi
-    # Use Python for the socket call — it's already in PATH and handles the
-    # newline-framed protocol correctly across platforms.
-    python3 - "$CUE_SOCKET" "$json" <<'PYEOF'
+    _cue_python - "$CUE_SOCKET" "$CUE_TIMEOUT" "$json" <<'PYEOF'
 import json, socket, sys
-sock_path, payload = sys.argv[1], sys.argv[2]
+sock_path, timeout_s, payload = sys.argv[1], float(sys.argv[2]), sys.argv[3]
 try:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.settimeout(15)
+        s.settimeout(timeout_s)
         s.connect(sock_path)
         s.sendall((payload + "\n").encode())
         data = b""
@@ -48,34 +50,23 @@ except Exception as e:
 PYEOF
 }
 
-# ---------------------------------------------------------------------------
-# Internal: build context JSON from current shell state
-# ---------------------------------------------------------------------------
-
-_cue_context_json() {
-    local cwd git_branch git_remote project_root os_name
-    cwd="$(pwd)"
-    os_name="$(uname -s | tr '[:upper:]' '[:lower:]')"
-    git_branch=""
-    git_remote=""
-    project_root="$cwd"
-
-    if command -v git &>/dev/null; then
-        git_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-        git_remote="$(git remote get-url origin 2>/dev/null || true)"
-        project_root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$cwd")"
-    fi
-
-    # Escape for JSON (basic — no control chars in these values normally)
-    local esc_cwd esc_branch esc_remote esc_root
-    esc_cwd="${cwd//\"/\\\"}"
-    esc_branch="${git_branch//\"/\\\"}"
-    esc_remote="${git_remote//\"/\\\"}"
-    esc_root="${project_root//\"/\\\"}"
-
-    printf '{"cwd":"%s","git_branch":"%s","git_remote":"%s","project_root":"%s","last_exit_code":%d,"shell":"%s","os":"%s"}' \
-        "$esc_cwd" "$esc_branch" "$esc_remote" "$esc_root" \
-        "${CUE_LAST_EXIT:-0}" "${SHELL:-zsh}" "$os_name"
+_cue_parse_command() {
+    # Usage: echo "$response" | _cue_parse_command
+    # Sets REPLY to command field or error comment.
+    local response="$1"
+    REPLY="$(_cue_python -c "
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+    if d.get('ok') and d.get('command'):
+        print(d['command'])
+    elif d.get('error'):
+        print('# cue error: ' + str(d['error'])[:80])
+    else:
+        print('')
+except Exception:
+    print('')
+" "$response")"
 }
 
 # ---------------------------------------------------------------------------
@@ -83,7 +74,6 @@ _cue_context_json() {
 # ---------------------------------------------------------------------------
 
 _cue_read_line() {
-    # ZLE cannot call read/vared (recursive ZLE error) — collect keys directly
     emulate -L zsh
     local char line="$1" prompt="$2"
     zle -R "${prompt}${line}"
@@ -91,15 +81,72 @@ _cue_read_line() {
         read -k 1 char || return 1
         case "$char" in
             $'\n'|$'\r') break ;;
-            $'\x03'|$'\x1b') return 1 ;;  # Ctrl+C / Escape
+            $'\x03'|$'\x1b') return 1 ;;
             $'\x7f'|$'\b') line="${line%?}" ;;
-            $'\x15') line="" ;;  # Ctrl+U — clear line
+            $'\x15') line="" ;;
             *) line+="$char" ;;
         esac
         zle -R "${prompt}${line}"
     done
     REPLY="$line"
     return 0
+}
+
+_cue_make_request() {
+    local op="$1"
+    local -a env_args=()
+    [[ -n "${CUE_REQ_QUERY:-}" ]] && env_args+=(CUE_REQ_QUERY="$CUE_REQ_QUERY")
+    [[ -n "${CUE_REQ_BUFFER:-}" ]] && env_args+=(CUE_REQ_BUFFER="$CUE_REQ_BUFFER")
+    [[ -n "${CUE_REQ_COMMAND:-}" ]] && env_args+=(CUE_REQ_COMMAND="$CUE_REQ_COMMAND")
+    env_args+=(CUE_LAST_EXIT="${CUE_LAST_EXIT:-0}")
+    REPLY="$(env "${env_args[@]}" _cue_python - "$op" <<'PYEOF'
+import json, os, subprocess, sys
+
+op = sys.argv[1]
+cwd = os.getcwd()
+os_name = __import__("platform").system().lower()
+git_branch = ""
+git_remote = ""
+project_root = cwd
+
+for cmd, attr in (
+    (["git", "rev-parse", "--abbrev-ref", "HEAD"], "git_branch"),
+    (["git", "remote", "get-url", "origin"], "git_remote"),
+    (["git", "rev-parse", "--show-toplevel"], "project_root"),
+):
+    try:
+        val = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True).strip()
+        if attr == "git_branch":
+            git_branch = val
+        elif attr == "git_remote":
+            git_remote = val
+        else:
+            project_root = val
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+req = {
+    "op": op,
+    "context": {
+        "cwd": cwd,
+        "git_branch": git_branch,
+        "git_remote": git_remote,
+        "project_root": project_root,
+        "last_exit_code": int(os.environ.get("CUE_LAST_EXIT", "0") or 0),
+        "shell": os.environ.get("SHELL", "zsh"),
+        "os": os_name,
+    },
+}
+if os.environ.get("CUE_REQ_QUERY"):
+    req["query"] = os.environ["CUE_REQ_QUERY"]
+if os.environ.get("CUE_REQ_BUFFER"):
+    req["context"]["buffer"] = os.environ["CUE_REQ_BUFFER"]
+    req["buffer"] = os.environ["CUE_REQ_BUFFER"]
+if os.environ.get("CUE_REQ_COMMAND"):
+    req["command"] = os.environ["CUE_REQ_COMMAND"]
+print(json.dumps(req))
+PYEOF
+)"
 }
 
 _cue_generate() {
@@ -120,42 +167,18 @@ _cue_generate() {
         return 0
     fi
 
-    # Show spinner while waiting
     BUFFER="⏳ generating..."
     zle redisplay
 
-    # Build and send request
-    local ctx_json
-    ctx_json="$(_cue_context_json)"
-    local esc_query="${query//\"/\\\"}"
+    CUE_REQ_QUERY="$query"
+    unset CUE_REQ_BUFFER CUE_REQ_COMMAND
     local req_json
-    req_json="$(printf '{"op":"generate","query":"%s","context":%s}' "$esc_query" "$ctx_json")"
+    req_json="$(_cue_make_request generate)"
 
     response="$(_cue_send "$req_json" 2>/dev/null)"
+    _cue_parse_command "$response"
+    command="$REPLY"
 
-    if [[ -z "$response" ]]; then
-        BUFFER="$saved_buffer"
-        zle redisplay
-        return
-    fi
-
-    # Extract command field from JSON response using Python (reliable, no jq dep)
-    command="$(python3 -c "
-import json, sys
-try:
-    d = json.loads(sys.stdin.read())
-    if d.get('ok') and d.get('command'):
-        print(d['command'])
-    elif d.get('error'):
-        print('# cue error: ' + d['error'][:80])
-    else:
-        print('')
-except Exception as e:
-    print('')
-" <<< "$response")"
-
-    # BUFFER-ALWAYS: place command in buffer; user reviews and presses Enter
-    # Never call zle accept-line — this is an architectural invariant
     BUFFER="$command"
     zle end-of-line
     zle redisplay
@@ -176,24 +199,15 @@ _cue_explain() {
     BUFFER="⏳ explaining..."
     zle redisplay
 
-    local ctx_json
-    ctx_json="$(_cue_context_json)"
-    local esc_cmd="${buffer_cmd//\"/\\\"}"
-    local req_json
-    req_json="$(printf '{"op":"explain","context":%s,"buffer":"%s"}' "$ctx_json" "$esc_cmd")"
+    unset CUE_REQ_QUERY CUE_REQ_COMMAND
+    CUE_REQ_BUFFER="$buffer_cmd"
+    local req_json response explanation
+    req_json="$(_cue_make_request explain)"
 
-    local response explanation
     response="$(_cue_send "$req_json" 2>/dev/null)"
-    explanation="$(python3 -c "
-import json, sys
-try:
-    d = json.loads(sys.stdin.read())
-    print(d.get('command', '') or d.get('error', 'no explanation'))
-except:
-    print('parse error')
-" <<< "$response")"
+    _cue_parse_command "$response"
+    explanation="$REPLY"
 
-    # Show explanation above the prompt line, restore original buffer
     print ""
     print "cue explain: $explanation"
     BUFFER="$buffer_cmd"
@@ -206,7 +220,6 @@ except:
 
 _cue_fix_last() {
     local last_cmd="${history[1]}"
-    local last_exit="${CUE_LAST_EXIT:-1}"
 
     if [[ -z "$last_cmd" ]]; then
         zle -R "cue: no last command"
@@ -217,24 +230,16 @@ _cue_fix_last() {
     BUFFER="⏳ fixing..."
     zle redisplay
 
-    local ctx_json
-    ctx_json="$(_cue_context_json)"
-    local esc_cmd="${last_cmd//\"/\\\"}"
-    local req_json
-    req_json="$(printf '{"op":"fix_last","context":%s,"buffer":"%s","query":"fix the failed command"}' "$ctx_json" "$esc_cmd")"
+    unset CUE_REQ_COMMAND
+    CUE_REQ_QUERY="fix the failed command"
+    CUE_REQ_BUFFER="$last_cmd"
+    local req_json response command
+    req_json="$(_cue_make_request fix_last)"
 
-    local response command
     response="$(_cue_send "$req_json" 2>/dev/null)"
-    command="$(python3 -c "
-import json, sys
-try:
-    d = json.loads(sys.stdin.read())
-    print(d.get('command', '') or d.get('error', ''))
-except:
-    print('')
-" <<< "$response")"
+    _cue_parse_command "$response"
+    command="$REPLY"
 
-    # BUFFER-ALWAYS invariant — place fixed command in buffer
     BUFFER="$command"
     zle end-of-line
     zle redisplay
@@ -245,15 +250,14 @@ except:
 # ---------------------------------------------------------------------------
 
 _cue_precmd() {
-    # Capture exit code before anything else modifies it
     CUE_LAST_EXIT=$?
 
-    # Index the most recent command asynchronously (fire and forget)
     local last_cmd="${history[1]}"
     if [[ -n "$last_cmd" && -S "$CUE_SOCKET" ]]; then
-        local esc_cmd="${last_cmd//\"/\\\"}"
-        local req_json="$(printf '{"op":"index_cmd","command":"%s"}' "$esc_cmd")"
-        # Run in background; ignore output; do not block the prompt
+        unset CUE_REQ_QUERY CUE_REQ_BUFFER
+        CUE_REQ_COMMAND="$last_cmd"
+        local req_json
+        req_json="$(_cue_make_request index_cmd)"
         ( _cue_send "$req_json" &>/dev/null ) &!
     fi
 }
@@ -266,11 +270,9 @@ zle -N _cue_generate
 zle -N _cue_explain
 zle -N _cue_fix_last
 
-# Default bindings (user can override in config before sourcing this file)
 bindkey "${CUE_KEY_GENERATE:-^K}" _cue_generate
 bindkey "${CUE_KEY_EXPLAIN:-^E}"  _cue_explain
 bindkey "${CUE_KEY_FIX:-^F}"      _cue_fix_last
 
-# Register precmd hook
 autoload -Uz add-zsh-hook
 add-zsh-hook precmd _cue_precmd

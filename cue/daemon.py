@@ -54,7 +54,10 @@ def _build_router():
     cfg = config_mgr.config
 
     # Storage
-    store = Store(cfg.cache.resolved_db_path)
+    store = Store(
+        cfg.cache.resolved_db_path,
+        history_max_entries=cfg.cache.history_max_entries,
+    )
 
     # Eagerly load the embedding model (pays the import cost now, not on first query)
     emb_mod.preload(cfg.embeddings.model)

@@ -8,16 +8,15 @@ This is the key token-saving mechanism on the provider side.
 from __future__ import annotations
 
 import os
-from typing import Iterator
 
 import httpx
 
 from .base import GenResult
 
-
 _ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
 _CACHE_CONTROL = {"type": "ephemeral"}
+_HTTP_TIMEOUT = 45.0
 
 
 class AnthropicProvider:
@@ -27,16 +26,11 @@ class AnthropicProvider:
     supports_prompt_caching = True
 
     def __init__(self, api_key: str = "") -> None:
-        # Key resolution order: explicit arg → CUE_ANTHROPIC_API_KEY → ANTHROPIC_API_KEY
         self.api_key = (
             api_key
             or os.environ.get("CUE_ANTHROPIC_API_KEY", "")
             or os.environ.get("ANTHROPIC_API_KEY", "")
         )
-
-    # ------------------------------------------------------------------
-    # Public interface (satisfies Provider protocol)
-    # ------------------------------------------------------------------
 
     def generate(
         self,
@@ -48,7 +42,8 @@ class AnthropicProvider:
         max_tokens: int = 100,
         stop: list[str] | None = None,
         stream: bool = False,
-    ) -> GenResult | Iterator[str]:
+    ) -> GenResult:
+        del stream  # streaming not supported in v1 shell widget
         if not self.api_key:
             return GenResult(
                 text="", tokens_in=0, tokens_out=0, cached_tokens=0,
@@ -56,7 +51,6 @@ class AnthropicProvider:
                 error="No API key configured for Anthropic provider.",
             )
 
-        # Build system block with cache_control to amortize it across calls
         system_block = [
             {
                 "type": "text",
@@ -65,12 +59,10 @@ class AnthropicProvider:
             }
         ]
 
-        # Build messages: few-shot (with cache on last pair) + user query
         messages = []
         few_shot_count = len(few_shot)
         for i, msg in enumerate(few_shot):
             entry: dict = {"role": msg["role"], "content": msg["content"]}
-            # Mark the last few-shot message so the prefix is cached
             if i == few_shot_count - 1:
                 entry = {
                     "role": msg["role"],
@@ -84,7 +76,6 @@ class AnthropicProvider:
                 }
             messages.append(entry)
 
-        # Dynamic user message (not cached — changes every call)
         messages.append({"role": "user", "content": user})
 
         payload: dict = {
@@ -103,18 +94,11 @@ class AnthropicProvider:
             "anthropic-beta": "prompt-caching-2024-07-31",
         }
 
-        if stream:
-            return self._stream(payload, headers, model)
-
         return self._complete(payload, headers, model)
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _complete(self, payload: dict, headers: dict, model: str) -> GenResult:
         try:
-            with httpx.Client(timeout=30.0) as client:
+            with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
                 resp = client.post(_ANTHROPIC_API_URL, json=payload, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
@@ -141,29 +125,6 @@ class AnthropicProvider:
             model=data.get("model", model),
             provider=self.name,
         )
-
-    def _stream(self, payload: dict, headers: dict, model: str) -> Iterator[str]:
-        payload["stream"] = True
-        try:
-            with httpx.Client(timeout=60.0) as client:
-                with client.stream("POST", _ANTHROPIC_API_URL, json=payload, headers=headers) as resp:
-                    resp.raise_for_status()
-                    for line in resp.iter_lines():
-                        if line.startswith("data: "):
-                            chunk = line[6:]
-                            if chunk == "[DONE]":
-                                break
-                            import json
-                            try:
-                                event = json.loads(chunk)
-                            except json.JSONDecodeError:
-                                continue
-                            if event.get("type") == "content_block_delta":
-                                delta = event.get("delta", {})
-                                if delta.get("type") == "text_delta":
-                                    yield delta.get("text", "")
-        except Exception:
-            return
 
     @staticmethod
     def _extract_text(data: dict) -> str:

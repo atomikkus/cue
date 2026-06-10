@@ -8,6 +8,7 @@ Supported ops:
   health     — ping / liveness check
   stats      — return telemetry stats
   reload     — SIGHUP-equivalent: reload config
+  reindex    — rebuild history embedding index
 """
 
 from __future__ import annotations
@@ -64,6 +65,8 @@ class Router:
                 return self._handle_stats()
             elif op == "reload":
                 return self._handle_reload()
+            elif op == "reindex":
+                return self._handle_reindex(request)
             else:
                 return {"ok": False, "error": f"Unknown op: {op}"}
         except Exception as exc:
@@ -145,6 +148,25 @@ class Router:
             self.config_manager.reload()
             return {"ok": True, "message": "Config reloaded."}
         except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def _handle_reindex(self, request: dict) -> dict:
+        """Rebuild the shell history embedding index."""
+        from cue.history import ingest_history  # noqa: PLC0415
+
+        force = bool(request.get("force", False))
+        source = request.get("source", "zsh")
+        try:
+            count = ingest_history(
+                self.store,
+                self.embedder.embed_batch,
+                self.embedding_model,
+                source=source,
+                force=force,
+            )
+            return {"ok": True, "indexed": count, "force": force}
+        except Exception as exc:
+            log.exception("Reindex failed")
             return {"ok": False, "error": str(exc)}
 
     # ------------------------------------------------------------------

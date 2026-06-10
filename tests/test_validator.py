@@ -82,6 +82,14 @@ class TestDangerScan:
         r = validate("git push origin main")
         assert not r.is_dangerous
 
+    def test_chmod_777_relative_path_not_dangerous(self):
+        r = validate("chmod 777 ./foo/bar")
+        assert not r.is_dangerous
+
+    def test_chmod_777_on_root_still_dangerous(self):
+        r = validate("chmod 777 /")
+        assert r.is_dangerous
+
     def test_kill_minus_9_minus_1(self):
         r = validate("kill -9 -1")
         assert r.is_dangerous

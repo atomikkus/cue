@@ -10,7 +10,7 @@ Static system + few_shot constitute the cacheable prefix; user is the dynamic su
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterator, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 
 @dataclass
@@ -73,7 +73,7 @@ class Provider(Protocol):
         max_tokens: int = 100,
         stop: list[str] | None = None,
         stream: bool = False,
-    ) -> GenResult | Iterator[str]:
+    ) -> GenResult:
         ...
 
 

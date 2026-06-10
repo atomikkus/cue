@@ -1,7 +1,7 @@
 """SQLite-backed storage layer.
 
 Tables:
-  exact_cache     — verbatim query → command mapping
+  exact_cache     — verbatim query → command mapping (keyed by query + context)
   semantic_cache  — embedding + command pairs for similarity search
   history_index   — shell history with embeddings for Tier-2 search
   telemetry       — local opt-in usage stats (never transmitted)
@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Generator
 
@@ -28,7 +30,8 @@ PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
 
 CREATE TABLE IF NOT EXISTS exact_cache (
-    query_norm   TEXT PRIMARY KEY,
+    cache_key    TEXT PRIMARY KEY,
+    query_norm   TEXT NOT NULL,
     command      TEXT NOT NULL,
     context_hash TEXT,
     hits         INTEGER DEFAULT 1,
@@ -36,26 +39,30 @@ CREATE TABLE IF NOT EXISTS exact_cache (
     last_used    INTEGER
 );
 
+CREATE INDEX IF NOT EXISTS idx_exact_query ON exact_cache(query_norm);
+
 CREATE TABLE IF NOT EXISTS semantic_cache (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    query        TEXT NOT NULL,
-    embedding    BLOB NOT NULL,
-    command      TEXT NOT NULL,
-    context_hash TEXT,
-    provider     TEXT,
-    model        TEXT,
-    hits         INTEGER DEFAULT 1,
-    created_at   INTEGER,
-    last_used    INTEGER
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    query         TEXT NOT NULL,
+    embedding     BLOB NOT NULL,
+    embedding_dim INTEGER NOT NULL DEFAULT 384,
+    command       TEXT NOT NULL,
+    context_hash  TEXT,
+    provider      TEXT,
+    model         TEXT,
+    hits          INTEGER DEFAULT 1,
+    created_at    INTEGER,
+    last_used     INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS history_index (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    command    TEXT NOT NULL UNIQUE,
-    embedding  BLOB NOT NULL,
-    source     TEXT,
-    freq       INTEGER DEFAULT 1,
-    indexed_at INTEGER
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    command       TEXT NOT NULL UNIQUE,
+    embedding     BLOB NOT NULL,
+    embedding_dim INTEGER NOT NULL DEFAULT 384,
+    source        TEXT,
+    freq          INTEGER DEFAULT 1,
+    indexed_at    INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS telemetry (
@@ -69,34 +76,133 @@ CREATE TABLE IF NOT EXISTS telemetry (
 
 CREATE INDEX IF NOT EXISTS idx_semantic_context ON semantic_cache(context_hash);
 CREATE INDEX IF NOT EXISTS idx_history_freq ON history_index(freq DESC);
+CREATE INDEX IF NOT EXISTS idx_history_indexed ON history_index(indexed_at ASC);
 """
+
+
+def exact_cache_key(query_norm: str, context_hash: str | None) -> str:
+    """Composite cache key — context_hash empty string when not context-sensitive."""
+    return f"{query_norm}|{context_hash or ''}"
+
+
+def blob_to_vec(blob: bytes | None, expected_dim: int | None = None) -> np.ndarray | None:
+    """Convert a stored BLOB back into a numpy float32 array."""
+    if blob is None:
+        return None
+    vec = np.frombuffer(blob, dtype=np.float32).copy()
+    if expected_dim is not None and vec.shape[0] != expected_dim:
+        return None
+    return vec
+
+
+@dataclass
+class _MatrixCache:
+    """In-memory embedding matrix + row metadata for fast similarity search."""
+
+    rows: list[dict] = field(default_factory=list)
+    matrix: np.ndarray | None = None  # shape (N, D)
+
+    def invalidate(self) -> None:
+        self.rows = []
+        self.matrix = None
 
 
 class Store:
     """Thread-safe SQLite store for all cue persistence."""
 
-    def __init__(self, db_path: Path | str) -> None:
+    def __init__(self, db_path: Path | str, *, history_max_entries: int = 10_000) -> None:
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.history_max_entries = history_max_entries
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._semantic_caches: dict[str | None, _MatrixCache] = {}
+        self._history_cache = _MatrixCache()
         self._init_schema()
 
     def _init_schema(self) -> None:
-        self._conn.executescript(_SCHEMA)
-        self._conn.commit()
+        with self._lock:
+            self._conn.executescript(_SCHEMA)
+            self._migrate_schema()
+            self._conn.commit()
+
+    def _migrate_schema(self) -> None:
+        """Migrate legacy schemas from earlier cue versions."""
+        tables = {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+
+        # Legacy exact_cache used query_norm as sole PRIMARY KEY
+        if "exact_cache" in tables:
+            cols = {row[1] for row in self._conn.execute("PRAGMA table_info(exact_cache)")}
+            if "cache_key" not in cols:
+                self._conn.executescript(
+                    """
+                    CREATE TABLE exact_cache_new (
+                        cache_key    TEXT PRIMARY KEY,
+                        query_norm   TEXT NOT NULL,
+                        command      TEXT NOT NULL,
+                        context_hash TEXT,
+                        hits         INTEGER DEFAULT 1,
+                        created_at   INTEGER,
+                        last_used    INTEGER
+                    );
+                    INSERT INTO exact_cache_new(cache_key, query_norm, command, context_hash, hits, created_at, last_used)
+                    SELECT query_norm || '|' || COALESCE(context_hash, ''), query_norm, command, context_hash, hits, created_at, last_used
+                    FROM exact_cache;
+                    DROP TABLE exact_cache;
+                    ALTER TABLE exact_cache_new RENAME TO exact_cache;
+                    CREATE INDEX IF NOT EXISTS idx_exact_query ON exact_cache(query_norm);
+                    """
+                )
+
+        if "semantic_cache" in tables:
+            cols = {row[1] for row in self._conn.execute("PRAGMA table_info(semantic_cache)")}
+            if "embedding_dim" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE semantic_cache ADD COLUMN embedding_dim INTEGER NOT NULL DEFAULT 384"
+                )
+                self._conn.execute(
+                    "UPDATE semantic_cache SET embedding_dim = length(embedding) / 4 WHERE embedding_dim = 384"
+                )
+
+        if "history_index" in tables:
+            cols = {row[1] for row in self._conn.execute("PRAGMA table_info(history_index)")}
+            if "embedding_dim" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE history_index ADD COLUMN embedding_dim INTEGER NOT NULL DEFAULT 384"
+                )
+                self._conn.execute(
+                    "UPDATE history_index SET embedding_dim = length(embedding) / 4 WHERE embedding_dim = 384"
+                )
 
     @contextmanager
     def _tx(self) -> Generator[sqlite3.Connection, None, None]:
-        try:
-            yield self._conn
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
-            raise
+        with self._lock:
+            try:
+                yield self._conn
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
+
+    def _invalidate_semantic_cache(self, context_hash: str | None = None) -> None:
+        if context_hash is None:
+            self._semantic_caches.clear()
+        else:
+            self._semantic_caches.pop(context_hash, None)
+            self._semantic_caches.pop(None, None)
+
+    def _invalidate_history_cache(self) -> None:
+        self._history_cache.invalidate()
 
     # ------------------------------------------------------------------
     # Exact cache
@@ -104,37 +210,34 @@ class Store:
 
     def exact_get(self, query_norm: str, context_hash: str | None = None) -> str | None:
         """Return a cached command for a normalized query, or None on miss."""
-        if context_hash:
+        key = exact_cache_key(query_norm, context_hash)
+        with self._lock:
             row = self._conn.execute(
-                "SELECT command FROM exact_cache WHERE query_norm=? AND (context_hash IS NULL OR context_hash=?)",
-                (query_norm, context_hash),
+                "SELECT command FROM exact_cache WHERE cache_key=?",
+                (key,),
             ).fetchone()
-        else:
-            row = self._conn.execute(
-                "SELECT command FROM exact_cache WHERE query_norm=?",
-                (query_norm,),
-            ).fetchone()
-        if row:
-            now = int(time.time())
-            self._conn.execute(
-                "UPDATE exact_cache SET hits=hits+1, last_used=? WHERE query_norm=?",
-                (now, query_norm),
-            )
-            self._conn.commit()
-            return row["command"]
+            if row:
+                now = int(time.time())
+                self._conn.execute(
+                    "UPDATE exact_cache SET hits=hits+1, last_used=? WHERE cache_key=?",
+                    (now, key),
+                )
+                self._conn.commit()
+                return row["command"]
         return None
 
     def exact_put(self, query_norm: str, command: str, context_hash: str | None = None) -> None:
+        key = exact_cache_key(query_norm, context_hash)
         now = int(time.time())
         with self._tx():
             self._conn.execute(
-                """INSERT INTO exact_cache(query_norm, command, context_hash, created_at, last_used)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(query_norm) DO UPDATE SET
+                """INSERT INTO exact_cache(cache_key, query_norm, command, context_hash, created_at, last_used)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(cache_key) DO UPDATE SET
                        command=excluded.command,
                        hits=hits+1,
                        last_used=excluded.last_used""",
-                (query_norm, command, context_hash, now, now),
+                (key, query_norm, command, context_hash, now, now),
             )
 
     # ------------------------------------------------------------------
@@ -142,17 +245,63 @@ class Store:
     # ------------------------------------------------------------------
 
     def semantic_get_all(self, context_hash: str | None = None) -> list[dict]:
-        """Load all semantic cache rows (embedding, command, context_hash)."""
-        if context_hash:
-            rows = self._conn.execute(
-                "SELECT id, embedding, command, context_hash FROM semantic_cache WHERE context_hash IS NULL OR context_hash=?",
-                (context_hash,),
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT id, embedding, command, context_hash FROM semantic_cache"
-            ).fetchall()
-        return [dict(r) for r in rows]
+        """Load semantic cache rows (embedding, command, context_hash)."""
+        cache_key = context_hash if context_hash else None
+        cached = self._semantic_caches.get(cache_key)
+        if cached and cached.rows:
+            return cached.rows
+
+        with self._lock:
+            if context_hash:
+                rows = self._conn.execute(
+                    "SELECT id, embedding, embedding_dim, command, context_hash FROM semantic_cache "
+                    "WHERE context_hash IS NULL OR context_hash=?",
+                    (context_hash,),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT id, embedding, embedding_dim, command, context_hash FROM semantic_cache"
+                ).fetchall()
+            result = [dict(r) for r in rows]
+
+        mc = _MatrixCache(rows=result)
+        self._semantic_caches[cache_key] = mc
+        return result
+
+    def semantic_get_matrix(
+        self, query_dim: int, context_hash: str | None = None
+    ) -> tuple[list[dict], np.ndarray]:
+        """Return rows and stacked embedding matrix, filtering dim mismatches."""
+        rows = self.semantic_get_all(context_hash)
+        cache_key = context_hash if context_hash else None
+        mc = self._semantic_caches.setdefault(cache_key, _MatrixCache())
+
+        if mc.matrix is not None and len(mc.rows) == len(rows):
+            return mc.rows, mc.matrix
+
+        valid_rows: list[dict] = []
+        vectors: list[np.ndarray] = []
+        for row in rows:
+            dim = row.get("embedding_dim") or 0
+            vec = blob_to_vec(row["embedding"], expected_dim=query_dim if dim else query_dim)
+            if vec is None:
+                if dim and dim != query_dim:
+                    continue
+                vec = blob_to_vec(row["embedding"])
+                if vec is None or vec.shape[0] != query_dim:
+                    continue
+            valid_rows.append(row)
+            vectors.append(vec)
+
+        if not vectors:
+            mc.rows = []
+            mc.matrix = None
+            return [], np.empty((0, query_dim), dtype=np.float32)
+
+        matrix = np.stack(vectors, axis=0)
+        mc.rows = valid_rows
+        mc.matrix = matrix
+        return valid_rows, matrix
 
     def semantic_put(
         self,
@@ -165,21 +314,24 @@ class Store:
     ) -> None:
         now = int(time.time())
         blob = embedding.astype(np.float32).tobytes()
+        dim = int(embedding.shape[0])
         with self._tx():
             self._conn.execute(
                 """INSERT INTO semantic_cache
-                   (query, embedding, command, context_hash, provider, model, created_at, last_used)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (query, blob, command, context_hash, provider, model, now, now),
+                   (query, embedding, embedding_dim, command, context_hash, provider, model, created_at, last_used)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (query, blob, dim, command, context_hash, provider, model, now, now),
             )
+        self._invalidate_semantic_cache(context_hash)
 
     def semantic_update_hit(self, row_id: int) -> None:
         now = int(time.time())
-        self._conn.execute(
-            "UPDATE semantic_cache SET hits=hits+1, last_used=? WHERE id=?",
-            (now, row_id),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE semantic_cache SET hits=hits+1, last_used=? WHERE id=?",
+                (now, row_id),
+            )
+            self._conn.commit()
 
     # ------------------------------------------------------------------
     # History index
@@ -187,23 +339,67 @@ class Store:
 
     def history_get_all(self) -> list[dict]:
         """Load all history embeddings."""
-        rows = self._conn.execute(
-            "SELECT id, command, embedding, freq FROM history_index ORDER BY freq DESC"
-        ).fetchall()
-        return [dict(r) for r in rows]
+        if self._history_cache.rows:
+            return self._history_cache.rows
+
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, command, embedding, embedding_dim, freq FROM history_index ORDER BY freq DESC"
+            ).fetchall()
+            result = [dict(r) for r in rows]
+
+        self._history_cache.rows = result
+        return result
+
+    def history_get_matrix(self, query_dim: int) -> tuple[list[dict], np.ndarray]:
+        """Return history rows and stacked embedding matrix, filtering dim mismatches."""
+        rows = self.history_get_all()
+        mc = self._history_cache
+
+        if mc.matrix is not None and len(mc.rows) == len(rows):
+            return mc.rows, mc.matrix
+
+        valid_rows: list[dict] = []
+        vectors: list[np.ndarray] = []
+        for row in rows:
+            dim = row.get("embedding_dim") or 0
+            vec = blob_to_vec(row["embedding"], expected_dim=query_dim if dim else query_dim)
+            if vec is None:
+                if dim and dim != query_dim:
+                    continue
+                vec = blob_to_vec(row["embedding"])
+                if vec is None or vec.shape[0] != query_dim:
+                    continue
+            valid_rows.append(row)
+            vectors.append(vec)
+
+        if not vectors:
+            mc.rows = []
+            mc.matrix = None
+            return [], np.empty((0, query_dim), dtype=np.float32)
+
+        matrix = np.stack(vectors, axis=0)
+        mc.rows = valid_rows
+        mc.matrix = matrix
+        return valid_rows, matrix
 
     def history_put(self, command: str, embedding: np.ndarray, source: str = "zsh_history") -> None:
         now = int(time.time())
         blob = embedding.astype(np.float32).tobytes()
+        dim = int(embedding.shape[0])
         with self._tx():
             self._conn.execute(
-                """INSERT INTO history_index(command, embedding, source, freq, indexed_at)
-                   VALUES (?, ?, ?, 1, ?)
+                """INSERT INTO history_index(command, embedding, embedding_dim, source, freq, indexed_at)
+                   VALUES (?, ?, ?, ?, 1, ?)
                    ON CONFLICT(command) DO UPDATE SET
                        freq=freq+1,
-                       indexed_at=excluded.indexed_at""",
-                (command, blob, source, now),
+                       indexed_at=excluded.indexed_at,
+                       embedding=excluded.embedding,
+                       embedding_dim=excluded.embedding_dim""",
+                (command, blob, dim, source, now),
             )
+            self._history_prune_locked()
+        self._invalidate_history_cache()
 
     def history_put_batch(self, entries: list[tuple[str, np.ndarray, str]]) -> None:
         """Bulk insert (command, embedding, source) tuples."""
@@ -211,22 +407,47 @@ class Store:
         with self._tx():
             for command, emb, source in entries:
                 blob = emb.astype(np.float32).tobytes()
+                dim = int(emb.shape[0])
                 self._conn.execute(
-                    """INSERT INTO history_index(command, embedding, source, freq, indexed_at)
-                       VALUES (?, ?, ?, 1, ?)
+                    """INSERT INTO history_index(command, embedding, embedding_dim, source, freq, indexed_at)
+                       VALUES (?, ?, ?, ?, 1, ?)
                        ON CONFLICT(command) DO UPDATE SET
                            freq=freq+1,
-                           indexed_at=excluded.indexed_at""",
-                    (command, blob, source, now),
+                           indexed_at=excluded.indexed_at,
+                           embedding=excluded.embedding,
+                           embedding_dim=excluded.embedding_dim""",
+                    (command, blob, dim, source, now),
                 )
+            self._history_prune_locked()
+        self._invalidate_history_cache()
+
+    def _history_prune_locked(self) -> None:
+        """Drop lowest-freq / oldest history rows when over cap. Caller holds lock via _tx."""
+        if self.history_max_entries <= 0:
+            return
+        count = self._conn.execute("SELECT COUNT(*) as n FROM history_index").fetchone()["n"]
+        excess = count - self.history_max_entries
+        if excess <= 0:
+            return
+        self._conn.execute(
+            """DELETE FROM history_index WHERE id IN (
+                SELECT id FROM history_index
+                ORDER BY freq ASC, indexed_at ASC
+                LIMIT ?
+            )""",
+            (excess,),
+        )
+        log.debug("Pruned %d history_index rows (cap=%d)", excess, self.history_max_entries)
 
     def history_count(self) -> int:
-        row = self._conn.execute("SELECT COUNT(*) as n FROM history_index").fetchone()
-        return row["n"] if row else 0
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) as n FROM history_index").fetchone()
+            return row["n"] if row else 0
 
     def history_known_commands(self) -> frozenset[str]:
-        rows = self._conn.execute("SELECT command FROM history_index").fetchall()
-        return frozenset(r["command"] for r in rows)
+        with self._lock:
+            rows = self._conn.execute("SELECT command FROM history_index").fetchall()
+            return frozenset(r["command"] for r in rows)
 
     # ------------------------------------------------------------------
     # Telemetry
@@ -248,7 +469,11 @@ class Store:
 
     def telemetry_stats(self) -> dict:
         """Aggregate stats for `cue stats` command."""
-        rows = self._conn.execute("SELECT tier, COUNT(*) as n, SUM(tokens_in) as ti, SUM(tokens_out) as to_ FROM telemetry GROUP BY tier").fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT tier, COUNT(*) as n, SUM(tokens_in) as ti, SUM(tokens_out) as to_ "
+                "FROM telemetry GROUP BY tier"
+            ).fetchall()
         total = sum(r["n"] for r in rows)
         tier_counts = {r["tier"]: r["n"] for r in rows}
         tier_tokens_in = {r["tier"]: r["ti"] or 0 for r in rows}
@@ -262,10 +487,3 @@ class Store:
             "total_tokens_out": sum(tier_tokens_out.values()),
             "history_entries": self.history_count(),
         }
-
-
-def blob_to_vec(blob: bytes | None) -> np.ndarray | None:
-    """Convert a stored BLOB back into a numpy float32 array."""
-    if blob is None:
-        return None
-    return np.frombuffer(blob, dtype=np.float32).copy()

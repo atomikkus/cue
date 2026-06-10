@@ -10,11 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import platform
 import re
-import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +52,15 @@ def redact_secrets(text: str) -> str:
 
     # Redact AWS keys
     text = _SECRET_PATTERNS[3][1].sub("[REDACTED_AWS_KEY]", text)
+
+    # Redact long opaque tokens (20+ alnum) that look like API keys
+    def _maybe_redact_api_key(m: re.Match) -> str:
+        val = m.group(0)
+        if val.startswith("sk-") or len(val) < 24:
+            return val
+        return "[REDACTED_KEY]"
+
+    text = _SECRET_PATTERNS[0][1].sub(_maybe_redact_api_key, text)
 
     # Redact long hex strings (possible hashes/secrets) — but not short ones
     def _maybe_redact_hex(m: re.Match) -> str:
@@ -111,52 +118,6 @@ class ShellContext:
         return " | ".join(parts)
 
 
-def capture_local() -> ShellContext:
-    """Capture context from the current process environment.
-
-    In daemon mode the context comes from the client request, not here.
-    This is for CLI / testing use.
-    """
-    ctx = ShellContext()
-    ctx.cwd = os.getcwd()
-    ctx.shell = os.environ.get("SHELL", "")
-    ctx.os_name = platform.system().lower()
-    ctx.last_exit_code = 0  # Can't know after-the-fact in daemon context
-
-    # Git context
-    try:
-        branch = subprocess.check_output(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip()
-        ctx.git_branch = branch
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-
-    try:
-        remote = subprocess.check_output(
-            ["git", "remote", "get-url", "origin"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip()
-        ctx.git_remote = remote
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-
-    try:
-        root = subprocess.check_output(
-            ["git", "rev-parse", "--show-toplevel"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip()
-        ctx.project_root = root
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        ctx.project_root = ctx.cwd
-
-    return ctx
-
-
 def from_client_payload(payload: dict) -> ShellContext:
     """Deserialize context from the JSON payload sent by the shell widget."""
     ctx = ShellContext()
@@ -177,7 +138,7 @@ def from_client_payload(payload: dict) -> ShellContext:
 # ---------------------------------------------------------------------------
 
 _DEICTIC_WORDS = re.compile(
-    r'\b(this|that|here|the last|the current|my|our|the same|it|its|them|these|those)\b',
+    r'\b(this|that|here|the last|the current|the same|it|its|them|these|those)\b',
     re.IGNORECASE,
 )
 

@@ -70,6 +70,7 @@ key      = ""
 similarity_threshold = 0.92
 history_threshold    = 0.88
 db_path = "~/.config/cue/cache.db"
+history_max_entries  = 10000
 
 [context]
 include_git   = true
@@ -123,6 +124,7 @@ class CacheConfig:
     similarity_threshold: float = 0.92
     history_threshold: float = 0.88
     db_path: str = "~/.config/cue/cache.db"
+    history_max_entries: int = 10_000
 
     @property
     def resolved_db_path(self) -> Path:
@@ -219,6 +221,7 @@ def _parse_raw(raw: dict[str, Any]) -> Config:
             similarity_threshold=float(cache.get("similarity_threshold", 0.92)),
             history_threshold=float(cache.get("history_threshold", 0.88)),
             db_path=cache.get("db_path", "~/.config/cue/cache.db"),
+            history_max_entries=int(cache.get("history_max_entries", 10_000)),
         )
 
     if context := raw.get("context"):
