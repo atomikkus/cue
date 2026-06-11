@@ -157,7 +157,7 @@ Everything lives in `~/.config/cue/config.toml`:
 | `[providers.primary]` | First LLM attempt |
 | `[providers.escalate]` | Retry model on validation failure |
 | `[cache]` | Similarity thresholds, SQLite path |
-| `[embeddings]` | Local model for cache/history (default: `all-MiniLM-L6-v2`) |
+| `[embeddings]` | Local ONNX embeddings via fastembed (default: `BAAI/bge-small-en-v1.5`) |
 | `[safety]` | Danger scan, secret redaction |
 
 ---
