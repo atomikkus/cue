@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Cue: AI-native terminal Ctrl+K — natural language to shell commands, in your buffer."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "Apache-2.0"
 dependencies = [
     "fastembed>=0.4.0",
     "numpy>=1.26.0",

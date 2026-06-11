@@ -190,10 +190,10 @@ pytest
 ruff check cue tests
 ```
 
-See [`CLAUDE.md`](docs/CLAUDE.md) for architecture, design principles, and the implementation roadmap.
+See [`ARCH.md`](docs/ARCH.md) for architecture, design principles, and the implementation roadmap.
 
 ---
 
 ## License
 
-MIT
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
