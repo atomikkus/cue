@@ -11,10 +11,11 @@ from cue.keys import (
     DEFAULT_MODELS,
     ESCALATE_MODELS,
     PROVIDER_NAMES,
+    _ENV_FALLBACKS,
+    delete_api_key,
     key_status,
-    keyring_delete,
-    keyring_set,
     provider_needs_key,
+    save_api_key,
 )
 
 _PROVIDER_MENU = """
@@ -47,6 +48,15 @@ def _prompt_yes_no(label: str, *, default: bool = True) -> bool:
     if not ans:
         return default
     return ans in ("y", "yes")
+
+
+def _print_key_saved(provider: str, where: str) -> None:
+    if where == "keyring":
+        print(f"✓ Key saved to keychain (service: cue, account: {provider})")
+        return
+    print("✓ Key saved to ~/.config/cue/config.toml (no OS keyring on this system)")
+    env_var = _ENV_FALLBACKS.get(provider, f"CUE_{provider.upper()}_API_KEY")
+    print(f"  Tip: or export {env_var} in ~/.bashrc for env-based storage")
 
 
 def _choose_provider() -> str:
@@ -96,15 +106,13 @@ def run_setup() -> int:
             else:
                 api_key = getpass.getpass(f"API key for {provider}: ").strip()
                 if api_key:
-                    keyring_set(provider, api_key)
-                    print(f"✓ Key saved to keychain (service: cue, account: {provider})")
+                    _print_key_saved(provider, save_api_key(provider, api_key))
         else:
             api_key = getpass.getpass(f"API key for {provider} (hidden): ").strip()
             if not api_key:
                 print("No key entered — you can add one later with: cue key set", provider)
             else:
-                keyring_set(provider, api_key)
-                print(f"✓ Key saved to keychain")
+                _print_key_saved(provider, save_api_key(provider, api_key))
     else:
         base_url = _prompt("Local API base URL", "http://localhost:11434/v1")
         set_config_value("providers.custom.base_url", base_url)
@@ -153,7 +161,7 @@ def run_key_list() -> int:
         source_label = {
             "env_cue": "environment (CUE_*)",
             "env": "environment",
-            "config": "config.toml (consider moving to keychain)",
+            "config": "config.toml",
             "keyring": "keychain",
             "none": "not set",
         }[source]
@@ -174,8 +182,7 @@ def run_key_set(args: list[str]) -> int:
     if not api_key:
         print("Aborted — empty key.", file=sys.stderr)
         return 1
-    keyring_set(provider, api_key)
-    print(f"✓ Key saved to keychain for {provider}")
+    _print_key_saved(provider, save_api_key(provider, api_key))
     _restart_daemon_hint()
     return 0
 
@@ -188,10 +195,10 @@ def run_key_delete(args: list[str]) -> int:
     if provider not in PROVIDER_NAMES:
         print(f"Unknown provider: {provider}", file=sys.stderr)
         return 1
-    if keyring_delete(provider):
-        print(f"✓ Removed keychain entry for {provider}")
+    if delete_api_key(provider):
+        print(f"✓ Removed stored key for {provider}")
     else:
-        print(f"No keychain entry for {provider} (or keyring unavailable)")
+        print(f"No stored key for {provider}")
     return 0
 
 

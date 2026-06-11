@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from cue.config_io import format_config_show, get_nested, load_raw, save_raw, set_config_value, set_nested
-from cue.keys import mask_key, resolve_key
+from cue.keys import mask_key, resolve_key, save_api_key
 
 
 class TestMaskKey:
@@ -45,6 +45,20 @@ class TestResolveKey:
         monkeypatch.delenv("CUE_OPENROUTER_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         assert resolve_key("openrouter", "from-config") == "from-config"
+
+
+class TestSaveApiKey:
+    def test_falls_back_to_config_when_no_keyring(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("CUE_CONFIG_DIR", str(tmp_path))
+        with (
+            patch("cue.config_io.CONFIG_PATH", tmp_path / "config.toml"),
+            patch("cue.config.CONFIG_PATH", tmp_path / "config.toml"),
+            patch("cue.keys.keyring_available", return_value=False),
+        ):
+            where = save_api_key("openrouter", "sk-or-test-key")
+            raw = load_raw(tmp_path / "config.toml")
+        assert where == "config"
+        assert raw["providers"]["openrouter"]["key"] == "sk-or-test-key"
 
 
 class TestConfigShow:

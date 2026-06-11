@@ -54,7 +54,20 @@ def mask_key(key: str) -> str:
     return f"{key[:4]}…{key[-4:]}"
 
 
+def keyring_available() -> bool:
+    """Return True when a real OS keyring backend is available (not WSL/headless fail)."""
+    try:
+        import keyring  # type: ignore[import]
+        from keyring.backends.fail import FailKeyring  # type: ignore[import]
+
+        return not isinstance(keyring.get_keyring(), FailKeyring)
+    except Exception:
+        return False
+
+
 def keyring_get(provider: str) -> str | None:
+    if not keyring_available():
+        return None
     try:
         import keyring  # type: ignore[import]
 
@@ -70,6 +83,8 @@ def keyring_set(provider: str, api_key: str) -> None:
 
 
 def keyring_delete(provider: str) -> bool:
+    if not keyring_available():
+        return False
     try:
         import keyring  # type: ignore[import]
 
@@ -77,6 +92,45 @@ def keyring_delete(provider: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def set_config_key(provider: str, api_key: str) -> None:
+    from cue.config_io import set_config_value  # noqa: PLC0415
+
+    set_config_value(f"providers.{provider}.key", api_key)
+
+
+def clear_config_key(provider: str) -> bool:
+    from cue.config_io import load_raw, save_raw, set_nested  # noqa: PLC0415
+
+    raw = load_raw()
+    providers = raw.get("providers")
+    if not isinstance(providers, dict):
+        return False
+    section = providers.get(provider)
+    if not isinstance(section, dict) or not section.get("key"):
+        return False
+    set_nested(raw, f"providers.{provider}.key", "")
+    save_raw(raw)
+    return True
+
+
+def save_api_key(provider: str, api_key: str) -> KeySource:
+    """Store an API key in the OS keychain, or config.toml when keyring is unavailable."""
+    if keyring_available():
+        try:
+            keyring_set(provider, api_key)
+            return "keyring"
+        except Exception:
+            pass
+    set_config_key(provider, api_key)
+    return "config"
+
+
+def delete_api_key(provider: str) -> bool:
+    """Remove a stored API key from keychain and/or config.toml."""
+    removed = keyring_delete(provider)
+    return clear_config_key(provider) or removed
 
 
 def resolve_key(provider_name: str, config_key: str = "") -> str:
