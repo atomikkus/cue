@@ -27,8 +27,8 @@ from typing import NoReturn
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_SOCKET_PATH = Path(os.environ.get("CUE_SOCKET", "~/.config/cue/daemon.sock")).expanduser()
-_DEFAULT_PID_PATH = Path(os.environ.get("CUE_PID", "~/.config/cue/daemon.pid")).expanduser()
+from cue.paths import resolve_pid_path, resolve_socket_path
+
 _BACKLOG = 8
 
 
@@ -115,6 +115,7 @@ class DaemonServer:
         self._running = False
 
     def start(self) -> None:
+        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
         # Remove stale socket file
         if self.socket_path.exists():
             self.socket_path.unlink()
@@ -358,8 +359,8 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="cue-daemon", description="cue background daemon")
     ap.add_argument("command", choices=["start", "stop", "health", "restart"],
                     nargs="?", default="start")
-    ap.add_argument("--socket", default=str(_DEFAULT_SOCKET_PATH), help="Socket path")
-    ap.add_argument("--pid", default=str(_DEFAULT_PID_PATH), help="PID file path")
+    ap.add_argument("--socket", default=None, help="Socket path")
+    ap.add_argument("--pid", default=None, help="PID file path")
     ap.add_argument("--log-level", default="WARNING", help="Logging level")
     ap.add_argument(
         "--foreground", "-f",
@@ -373,8 +374,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = ap.parse_args(argv)
 
-    socket_path = Path(args.socket).expanduser()
-    pid_path = Path(args.pid).expanduser()
+    socket_path = Path(args.socket).expanduser() if args.socket else resolve_socket_path()
+    pid_path = Path(args.pid).expanduser() if args.pid else resolve_pid_path()
 
     if args.command == "start":
         _cmd_start(

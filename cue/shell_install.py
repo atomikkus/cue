@@ -11,6 +11,7 @@ from importlib import resources
 from pathlib import Path
 
 from cue.config import CONFIG_DIR
+from cue.paths import resolve_socket_path
 from cue.keys import key_status
 
 SUPPORTED_SHELLS = frozenset({"zsh", "bash"})
@@ -104,7 +105,7 @@ def run_doctor() -> int:
     shell = detect_shell()
     system = platform.system().lower()
     widget = CONFIG_DIR / widget_filename(shell) if shell in SUPPORTED_SHELLS else None
-    socket = Path(os.environ.get("CUE_SOCKET", str(CONFIG_DIR / "daemon.sock"))).expanduser()
+    socket = resolve_socket_path()
 
     print("cue doctor")
     print("─" * 40)

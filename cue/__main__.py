@@ -24,7 +24,9 @@ import socket
 import sys
 from pathlib import Path
 
-_SOCKET_PATH = Path(os.environ.get("CUE_SOCKET", "~/.config/cue/daemon.sock")).expanduser()
+from cue.paths import resolve_socket_path
+
+_SOCKET_PATH = resolve_socket_path()
 
 
 def _send_request(request: dict, timeout: float = 15.0) -> dict:

@@ -8,7 +8,20 @@
 # Configuration
 # ---------------------------------------------------------------------------
 
-CUE_SOCKET="${CUE_SOCKET:-${HOME}/.config/cue/daemon.sock}"
+_cue_resolve_config_dir() {
+    if [[ -n "${CUE_CONFIG_DIR:-}" ]]; then
+        printf '%s' "$CUE_CONFIG_DIR"
+        return
+    fi
+    local dir="${HOME}/.config/cue"
+    if [[ -f /proc/version ]] && grep -qiE 'microsoft|wsl' /proc/version && [[ "$dir" == /mnt/* ]]; then
+        dir="/home/$(id -un)/.config/cue"
+    fi
+    printf '%s' "$dir"
+}
+
+CUE_CONFIG_DIR="${CUE_CONFIG_DIR:-$(_cue_resolve_config_dir)}"
+CUE_SOCKET="${CUE_SOCKET:-${CUE_CONFIG_DIR}/daemon.sock}"
 CUE_TIMEOUT="${CUE_TIMEOUT:-45}"
 
 # ---------------------------------------------------------------------------

@@ -22,7 +22,9 @@ else:
     except ImportError:
         import tomli as tomllib  # type: ignore[no-redef]
 
-CONFIG_DIR = Path(os.environ.get("CUE_CONFIG_DIR", "~/.config/cue")).expanduser()
+from cue.paths import resolve_config_dir
+
+CONFIG_DIR = resolve_config_dir()
 CONFIG_PATH = CONFIG_DIR / "config.toml"
 
 # ---------------------------------------------------------------------------

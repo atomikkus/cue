@@ -21,6 +21,9 @@ CUE_VENV_DIR=""
 CUE_PATH_LINE=""
 CUE_ZSH_HOOK_LINE=""
 CUE_BASH_HOOK_LINE=""
+CUE_CONFIG_EXPORT_LINE=""
+CUE_SOCKET_EXPORT_LINE='export CUE_SOCKET="${CUE_CONFIG_DIR}/daemon.sock"'
+CUE_PID_EXPORT_LINE='export CUE_PID="${CUE_CONFIG_DIR}/daemon.pid"'
 CUE_DAEMON_LAUNCH_LINE='(cue-daemon start --no-wait &>/dev/null &)'
 
 PYTHON="${PYTHON:-python3}"
@@ -134,6 +137,7 @@ set_hook_lines_for_backend() {
     fi
     CUE_ZSH_HOOK_LINE="source \"${CUE_CONFIG_DIR}/cue.zsh\""
     CUE_BASH_HOOK_LINE="source \"${CUE_CONFIG_DIR}/cue.bash\""
+    CUE_CONFIG_EXPORT_LINE="export CUE_CONFIG_DIR=\"${CUE_CONFIG_DIR}\""
 }
 
 cue_path() {
@@ -622,6 +626,12 @@ install_profile_hooks() {
     else
         ok "cue PATH already in $profile"
     fi
+
+    if add_line_if_missing "$CUE_CONFIG_EXPORT_LINE" "$profile"; then
+        ok "Added CUE_CONFIG_DIR to $profile"
+    fi
+    add_line_if_missing "$CUE_SOCKET_EXPORT_LINE" "$profile" || true
+    add_line_if_missing "$CUE_PID_EXPORT_LINE" "$profile" || true
 
     if [[ -f "$widget_file" ]]; then
         if add_line_if_missing "$hook_line" "$profile"; then
