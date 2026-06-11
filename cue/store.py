@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS exact_cache (
     query_norm   TEXT NOT NULL,
     command      TEXT NOT NULL,
     context_hash TEXT,
+    provenance   TEXT NOT NULL DEFAULT 'proven',
     hits         INTEGER DEFAULT 1,
     created_at   INTEGER,
     last_used    INTEGER
@@ -70,6 +71,22 @@ CREATE TABLE IF NOT EXISTS pending_cache (
 );
 
 CREATE INDEX IF NOT EXISTS idx_pending_created ON pending_cache(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS rejected_cache (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    query_norm       TEXT NOT NULL,
+    query            TEXT NOT NULL,
+    embedding        BLOB NOT NULL,
+    embedding_dim    INTEGER NOT NULL DEFAULT 384,
+    rejected_command TEXT NOT NULL,
+    context_hash     TEXT,
+    created_at       INTEGER NOT NULL,
+    last_seen        INTEGER NOT NULL,
+    hits             INTEGER DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_rejected_created ON rejected_cache(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rejected_query ON rejected_cache(query_norm);
 
 CREATE TABLE IF NOT EXISTS history_index (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,7 +150,7 @@ class Store:
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._semantic_caches: dict[str | None, _MatrixCache] = {}
+        self._semantic_caches: dict[object, _MatrixCache] = {}
         self._history_cache = _MatrixCache()
         self._init_schema()
 
@@ -163,18 +180,27 @@ class Store:
                         query_norm   TEXT NOT NULL,
                         command      TEXT NOT NULL,
                         context_hash TEXT,
+                        provenance   TEXT NOT NULL DEFAULT 'llm',
                         hits         INTEGER DEFAULT 1,
                         created_at   INTEGER,
                         last_used    INTEGER
                     );
-                    INSERT INTO exact_cache_new(cache_key, query_norm, command, context_hash, hits, created_at, last_used)
-                    SELECT query_norm || '|' || COALESCE(context_hash, ''), query_norm, command, context_hash, hits, created_at, last_used
+                    INSERT INTO exact_cache_new(cache_key, query_norm, command, context_hash, provenance, hits, created_at, last_used)
+                    SELECT query_norm || '|' || COALESCE(context_hash, ''), query_norm, command, context_hash, 'llm', hits, created_at, last_used
                     FROM exact_cache;
                     DROP TABLE exact_cache;
                     ALTER TABLE exact_cache_new RENAME TO exact_cache;
                     CREATE INDEX IF NOT EXISTS idx_exact_query ON exact_cache(query_norm);
                     """
                 )
+            else:
+                if "provenance" not in cols:
+                    self._conn.execute(
+                        "ALTER TABLE exact_cache ADD COLUMN provenance TEXT NOT NULL DEFAULT 'llm'"
+                    )
+                    self._conn.execute(
+                        "UPDATE exact_cache SET provenance = 'llm' WHERE provenance IS NULL OR provenance = ''"
+                    )
 
         if "semantic_cache" in tables:
             cols = {row[1] for row in self._conn.execute("PRAGMA table_info(semantic_cache)")}
@@ -234,7 +260,7 @@ class Store:
         key = exact_cache_key(query_norm, context_hash)
         with self._lock:
             row = self._conn.execute(
-                "SELECT command FROM exact_cache WHERE cache_key=?",
+                "SELECT command FROM exact_cache WHERE cache_key=? AND provenance = 'proven'",
                 (key,),
             ).fetchone()
             if row:
@@ -252,14 +278,38 @@ class Store:
         now = int(time.time())
         with self._tx():
             self._conn.execute(
-                """INSERT INTO exact_cache(cache_key, query_norm, command, context_hash, created_at, last_used)
-                   VALUES (?, ?, ?, ?, ?, ?)
+                """INSERT INTO exact_cache
+                   (cache_key, query_norm, command, context_hash, provenance, created_at, last_used)
+                   VALUES (?, ?, ?, ?, 'proven', ?, ?)
                    ON CONFLICT(cache_key) DO UPDATE SET
                        command=excluded.command,
+                       provenance='proven',
                        hits=hits+1,
                        last_used=excluded.last_used""",
                 (key, query_norm, command, context_hash, now, now),
             )
+
+    def exact_delete(
+        self,
+        query_norm: str,
+        command: str | None = None,
+        context_hash: str | None = None,
+    ) -> int:
+        key = exact_cache_key(query_norm, context_hash)
+        with self._tx():
+            if command is None:
+                cur = self._conn.execute("DELETE FROM exact_cache WHERE cache_key=?", (key,))
+            else:
+                cur = self._conn.execute(
+                    "DELETE FROM exact_cache WHERE cache_key=? AND command=?",
+                    (key, command),
+                )
+            return cur.rowcount
+
+    def exact_delete_command(self, command: str) -> int:
+        with self._tx():
+            cur = self._conn.execute("DELETE FROM exact_cache WHERE command=?", (command,))
+            return cur.rowcount
 
     # ------------------------------------------------------------------
     # Semantic cache
@@ -352,6 +402,14 @@ class Store:
             )
         self._invalidate_semantic_cache(context_hash)
 
+    def semantic_delete_command(self, command: str) -> int:
+        with self._tx():
+            cur = self._conn.execute("DELETE FROM semantic_cache WHERE command=?", (command,))
+            count = cur.rowcount
+        if count:
+            self._invalidate_semantic_cache()
+        return count
+
     # ------------------------------------------------------------------
     # Pending cache (LLM suggestions awaiting user execution)
     # ------------------------------------------------------------------
@@ -405,6 +463,13 @@ class Store:
         with self._tx():
             self._conn.execute("DELETE FROM pending_cache WHERE id=?", (row_id,))
 
+    def pending_delete_for_query(self, query_norm: str) -> int:
+        with self._tx():
+            cur = self._conn.execute(
+                "DELETE FROM pending_cache WHERE query_norm=?", (query_norm,)
+            )
+            return cur.rowcount
+
     def pending_prune_older_than(self, max_age_seconds: int) -> int:
         cutoff = int(time.time()) - max_age_seconds
         with self._tx():
@@ -416,6 +481,112 @@ class Store:
     def pending_count(self) -> int:
         with self._lock:
             row = self._conn.execute("SELECT COUNT(*) AS n FROM pending_cache").fetchone()
+            return int(row["n"]) if row else 0
+
+    # ------------------------------------------------------------------
+    # Rejected cache (query, command pairs the user did not accept)
+    # ------------------------------------------------------------------
+
+    def rejection_put(
+        self,
+        query_norm: str,
+        query: str,
+        embedding: np.ndarray,
+        rejected_command: str,
+        context_hash: str | None = None,
+    ) -> None:
+        now = int(time.time())
+        blob = embedding.astype(np.float32).tobytes()
+        dim = int(embedding.shape[0])
+        with self._tx():
+            self._conn.execute(
+                """INSERT INTO rejected_cache
+                   (query_norm, query, embedding, embedding_dim, rejected_command,
+                    context_hash, created_at, last_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   """,
+                (
+                    query_norm,
+                    query,
+                    blob,
+                    dim,
+                    rejected_command,
+                    context_hash,
+                    now,
+                    now,
+                ),
+            )
+
+    def rejection_list_recent(
+        self,
+        max_age_seconds: int,
+        context_hash: str | None = None,
+    ) -> list[dict]:
+        cutoff = int(time.time()) - max_age_seconds
+        with self._lock:
+            if context_hash:
+                rows = self._conn.execute(
+                    """SELECT id, query_norm, query, embedding, embedding_dim,
+                              rejected_command, context_hash, created_at, last_seen, hits
+                       FROM rejected_cache
+                       WHERE created_at >= ?
+                         AND (context_hash IS NULL OR context_hash = ?)
+                       ORDER BY last_seen DESC""",
+                    (cutoff, context_hash),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """SELECT id, query_norm, query, embedding, embedding_dim,
+                              rejected_command, context_hash, created_at, last_seen, hits
+                       FROM rejected_cache
+                       WHERE created_at >= ?
+                       ORDER BY last_seen DESC""",
+                    (cutoff,),
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def rejection_has_exact(
+        self,
+        query_norm: str,
+        rejected_command: str,
+        context_hash: str | None = None,
+        *,
+        max_age_seconds: int,
+    ) -> bool:
+        cutoff = int(time.time()) - max_age_seconds
+        with self._lock:
+            if context_hash:
+                row = self._conn.execute(
+                    """SELECT id FROM rejected_cache
+                       WHERE query_norm = ?
+                         AND rejected_command = ?
+                         AND created_at >= ?
+                         AND (context_hash IS NULL OR context_hash = ?)
+                       LIMIT 1""",
+                    (query_norm, rejected_command, cutoff, context_hash),
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    """SELECT id FROM rejected_cache
+                       WHERE query_norm = ?
+                         AND rejected_command = ?
+                         AND created_at >= ?
+                       LIMIT 1""",
+                    (query_norm, rejected_command, cutoff),
+                ).fetchone()
+            return row is not None
+
+    def rejection_prune_older_than(self, max_age_seconds: int) -> int:
+        cutoff = int(time.time()) - max_age_seconds
+        with self._tx():
+            cur = self._conn.execute(
+                "DELETE FROM rejected_cache WHERE created_at < ?", (cutoff,)
+            )
+            return cur.rowcount
+
+    def rejection_count(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) AS n FROM rejected_cache").fetchone()
             return int(row["n"]) if row else 0
 
     def semantic_update_hit(self, row_id: int) -> None:

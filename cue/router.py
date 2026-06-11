@@ -127,8 +127,17 @@ class Router:
 
         context = from_client_payload(request.get("context", {}))
         exit_code = int(request.get("exit_code", context.last_exit_code))
+        session = request.get("cue_session") or {}
+        session_query = (session.get("query") or "").strip() or None
+        session_suggestion = (session.get("suggestion") or "").strip() or None
 
-        promoted = self.resolver.promote_from_execution(command, exit_code)
+        promoted = self.resolver.promote_from_execution(
+            command,
+            exit_code,
+            session_query=session_query,
+            session_suggestion=session_suggestion,
+            session_ts=float(session.get("ts", 0) or 0) or None,
+        )
         index_single_command(
             command,
             self.store,
@@ -144,6 +153,7 @@ class Router:
             "uptime_seconds": uptime,
             "history_entries": self.store.history_count(),
             "pending_cache_entries": self.store.pending_count(),
+            "rejected_cache_entries": self.store.rejection_count(),
         }
 
     def _handle_stats(self) -> dict:

@@ -20,12 +20,12 @@ import numpy as np
 
 from cue.cache_promotion import (
     PENDING_TTL_SECONDS,
+    REJECTION_TTL_SECONDS,
     REJECTION_WINDOW_SECONDS,
     commands_match,
     normalize_command_for_match,
 )
 from cue.context import ShellContext, is_context_sensitive, redact_secrets
-from cue.store import blob_to_vec
 from cue.providers.base import (
     DEFAULT_FEW_SHOT,
     SYSTEM_PROMPT,
@@ -33,7 +33,7 @@ from cue.providers.base import (
     Provider,
     few_shot_to_messages,
 )
-from cue.store import Store
+from cue.store import Store, blob_to_vec
 from cue.validator import ValidationResult, is_likely_shell_command, validate
 
 log = logging.getLogger(__name__)
@@ -136,6 +136,10 @@ class Resolver:
                 # --- Tier 1: semantic cache ---
                 result, _best_cache_score = self._tier1(query, query_vec, ctx_hash, ctx_sensitive)
                 if result:
+                    # Queue the served command so a later correction can reject it.
+                    self._queue_pending(
+                        norm, query, query_vec, result.raw_command, ctx_hash, "", ""
+                    )
                     self._log_telemetry(op, 1, 0, 0, t0)
                     return result
 
@@ -167,6 +171,14 @@ class Resolver:
     def _tier0(self, norm: str, ctx_hash: str | None) -> ResolveResult | None:
         cached = self.store.exact_get(norm, ctx_hash)
         if cached is None:
+            return None
+        if self.store.rejection_has_exact(
+            norm,
+            cached,
+            ctx_hash,
+            max_age_seconds=REJECTION_TTL_SECONDS,
+        ):
+            self.store.exact_delete(norm, cached, ctx_hash)
             return None
         v = validate(cached, danger_scan=self.danger_scan)
         return ResolveResult(
@@ -205,6 +217,10 @@ class Resolver:
 
             cmd = row["command"]
             if not is_likely_shell_command(cmd):
+                continue
+
+            if self._is_rejected_pair(query_vec, cmd, ctx_hash):
+                log.debug("Tier 1 skip rejected pair: query=%r cmd=%r", query[:60], cmd[:60])
                 continue
 
             align = self._query_command_alignment(query_vec, cmd)
@@ -442,6 +458,33 @@ class Resolver:
             return 0.0
         return float(np.dot(query_vec.flatten(), cmd_vec.flatten()))
 
+    def _is_rejected_pair(
+        self,
+        query_vec: np.ndarray,
+        command: str,
+        ctx_hash: str | None,
+    ) -> bool:
+        """Return True when this query is close to a pair the user rejected."""
+        try:
+            self.store.rejection_prune_older_than(REJECTION_TTL_SECONDS)
+            rows = self.store.rejection_list_recent(REJECTION_TTL_SECONDS, ctx_hash)
+        except Exception as exc:
+            log.debug("Rejected-cache lookup failed: %s", exc)
+            return False
+
+        for row in rows:
+            if not commands_match(command, row["rejected_command"]):
+                continue
+            rejected_vec = blob_to_vec(
+                row["embedding"], expected_dim=row.get("embedding_dim")
+            )
+            if rejected_vec is None:
+                continue
+            score = float(np.dot(query_vec.flatten(), rejected_vec.flatten()))
+            if score >= self.similarity_threshold:
+                return True
+        return False
+
     def _build_user_message(
         self, query: str, context: ShellContext, history_hint: str | None, op: str
     ) -> str:
@@ -469,14 +512,36 @@ class Resolver:
 
         return "\n".join(parts)
 
-    def promote_from_execution(self, executed_command: str, exit_code: int) -> bool:
+    def promote_from_execution(
+        self,
+        executed_command: str,
+        exit_code: int,
+        *,
+        session_query: str | None = None,
+        session_suggestion: str | None = None,
+        session_ts: float | None = None,
+    ) -> bool:
         """Promote a pending LLM suggestion after the user runs it; prune on reject."""
         executed = executed_command.strip()
         if not executed or not is_likely_shell_command(executed):
             return False
+        executed = normalize_command_for_match(executed)
 
         try:
+            if session_query and session_suggestion:
+                promoted = self._promote_from_session(
+                    session_query, session_suggestion, executed, exit_code, session_ts
+                )
+                if promoted is not None:
+                    return promoted
+
+            if exit_code != 0:
+                demoted = self._demote_command(executed)
+                if demoted:
+                    log.debug("Demoted %d cache row(s) after failed command", demoted)
+
             self.store.pending_prune_older_than(PENDING_TTL_SECONDS)
+            self.store.rejection_prune_older_than(REJECTION_TTL_SECONDS)
             pending = self.store.pending_list_recent(PENDING_TTL_SECONDS)
             if not pending:
                 return False
@@ -488,22 +553,26 @@ class Resolver:
 
                 self.store.pending_delete(row["id"])
                 if exit_code != 0:
+                    self._reject_pending(row)
                     log.debug("Pending cache rejected: command failed (exit %d)", exit_code)
                     return False
 
-                command = normalize_command_for_match(executed)
-                query_vec = blob_to_vec(row["embedding"], expected_dim=row.get("embedding_dim"))
-                if query_vec is None:
-                    query_vec = blob_to_vec(row["embedding"])
+                query_vec = self._pending_query_vec(row)
                 if query_vec is None:
                     log.warning("Pending promotion skipped: bad embedding for %r", row["query"][:60])
                     return False
+
+                # Light edit: if the executed command differs from the suggestion,
+                # drop the stale suggested command so it is not served again.
+                suggested = normalize_command_for_match(row["suggested_command"])
+                if suggested != executed:
+                    self._demote_command(suggested)
 
                 self._promote_proven(
                     row["query_norm"],
                     row["query"],
                     query_vec,
-                    command,
+                    executed,
                     row.get("context_hash"),
                     row.get("provider") or "",
                     row.get("model") or "",
@@ -511,17 +580,127 @@ class Resolver:
                 log.info("Promoted proven cache for query %r", row["query"][:60])
                 return True
 
+            # Only the most-recent suggestion is the one the user actually saw;
+            # leave older pending rows to age out so we don't over-reject.
             recent = [r for r in pending if now - r["created_at"] <= REJECTION_WINDOW_SECONDS]
             if recent:
-                for row in recent:
-                    self.store.pending_delete(row["id"])
-                log.debug(
-                    "Cleared %d pending cache row(s): user ran a different command",
-                    len(recent),
-                )
+                newest = recent[0]
+                if exit_code == 0:
+                    query_vec = self._pending_query_vec(newest)
+                    if query_vec is not None:
+                        align = self._query_command_alignment(query_vec, executed)
+                        if align >= self.alignment_threshold:
+                            self._reject_pending(newest)
+                            self.store.pending_delete(newest["id"])
+                            self._promote_proven(
+                                newest["query_norm"],
+                                newest["query"],
+                                query_vec,
+                                executed,
+                                newest.get("context_hash"),
+                                newest.get("provider") or "",
+                                newest.get("model") or "",
+                            )
+                            log.info(
+                                "Promoted edited command for query %r",
+                                newest["query"][:60],
+                            )
+                            return True
+
+                self._reject_pending(newest)
+                self.store.pending_delete(newest["id"])
+                log.debug("Rejected suggestion for query %r", newest["query"][:60])
         except Exception as exc:
             log.warning("Pending cache promotion failed: %s", exc)
         return False
+
+    def _pending_query_vec(self, row: dict) -> np.ndarray | None:
+        query_vec = blob_to_vec(row["embedding"], expected_dim=row.get("embedding_dim"))
+        if query_vec is None:
+            query_vec = blob_to_vec(row["embedding"])
+        return query_vec
+
+    def _promote_from_session(
+        self,
+        session_query: str,
+        session_suggestion: str,
+        executed: str,
+        exit_code: int,
+        session_ts: float | None = None,
+    ) -> bool | None:
+        """Explicit Ctrl+K session link from the shell widget."""
+        if session_ts and time.time() - session_ts > REJECTION_WINDOW_SECONDS:
+            return None
+        norm = _normalize(session_query)
+        suggested = normalize_command_for_match(session_suggestion)
+        self.store.pending_delete_for_query(norm)
+
+        if exit_code != 0:
+            self._reject_session_pair(session_query, session_suggestion)
+            self._demote_command(suggested)
+            return False
+
+        try:
+            query_vec = self.embedder.embed(session_query, self.embedding_model)
+        except Exception as exc:
+            log.debug("Session promotion skipped: embedding failed: %s", exc)
+            return None
+
+        align = self._query_command_alignment(query_vec, executed)
+        related = align >= self.alignment_threshold or commands_match(executed, suggested)
+        if not related:
+            log.debug(
+                "Session rejected unrelated command for %r: %r (align=%.3f)",
+                session_query[:60],
+                executed[:60],
+                align,
+            )
+            self._reject_session_pair(session_query, session_suggestion)
+            self._demote_command(suggested)
+            return False
+
+        if suggested != executed:
+            self._demote_command(suggested)
+            self.store.rejection_put(norm, session_query, query_vec, suggested, None)
+
+        self._promote_proven(norm, session_query, query_vec, executed, None, "", "")
+        log.info("Promoted Ctrl+K session for query %r", session_query[:60])
+        return True
+
+    def _reject_session_pair(self, session_query: str, session_suggestion: str) -> None:
+        norm = _normalize(session_query)
+        try:
+            query_vec = self.embedder.embed(session_query, self.embedding_model)
+        except Exception:
+            return
+        self.store.rejection_put(
+            norm,
+            session_query,
+            query_vec,
+            normalize_command_for_match(session_suggestion),
+            None,
+        )
+
+    def _reject_pending(self, row: dict) -> None:
+        query_vec = self._pending_query_vec(row)
+        if query_vec is None:
+            return
+        self.store.rejection_put(
+            row["query_norm"],
+            row["query"],
+            query_vec,
+            normalize_command_for_match(row["suggested_command"]),
+            row.get("context_hash"),
+        )
+        self.store.exact_delete(
+            row["query_norm"],
+            normalize_command_for_match(row["suggested_command"]),
+            row.get("context_hash"),
+        )
+        self.store.semantic_delete_command(normalize_command_for_match(row["suggested_command"]))
+
+    def _demote_command(self, command: str) -> int:
+        return self.store.exact_delete_command(command) + self.store.semantic_delete_command(command)
 
     def _promote_proven(
         self,
