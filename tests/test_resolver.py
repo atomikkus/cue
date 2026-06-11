@@ -26,6 +26,13 @@ def _make_vec(dim: int = 384, seed: int = 0) -> np.ndarray:
     return (v / np.linalg.norm(v)).astype(np.float32)
 
 
+def _orthogonal_vec(base: np.ndarray, seed: int = 1) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    v = rng.standard_normal(base.shape[0]).astype(np.float32)
+    v = v - np.dot(v, base) * base
+    return (v / np.linalg.norm(v)).astype(np.float32)
+
+
 def _make_store(tmp_path: Path) -> Store:
     return Store(tmp_path / "test_cache.db")
 
@@ -185,6 +192,29 @@ class TestTier1:
         # Should fall through to Tier 3 since similarity is too low
         assert result.tier == 3
 
+    def test_low_alignment_skips_semantic_hit(self, tmp_path):
+        store = _make_store(tmp_path)
+        query_vec = _make_vec(seed=42)
+        cmd = "gsutil ls gs://wsi_bucket53/EGFR_SVS/*.svs"
+        store.semantic_put("list all .svs files", query_vec, cmd)
+
+        cmd_vec = _orthogonal_vec(query_vec)
+        embedder = _make_mock_embedder(query_vec=query_vec)
+        embedder.embed.side_effect = lambda text, model: (
+            cmd_vec if text == cmd else query_vec
+        )
+        embedder.top_k_similar.side_effect = lambda q, m, k=1: [(0, 0.95)]
+
+        provider = _make_mock_provider("find . -name '*.svs' -type f")
+        resolver = _make_resolver(store, embedder, provider)
+
+        ctx = _make_context()
+        result = resolver.resolve("list all .svs files in this folder", ctx)
+
+        assert result.tier == 3
+        assert "find" in result.command
+        provider.generate.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # Tier 2 — history search
@@ -321,6 +351,28 @@ class TestTier3:
         norm = _normalize("find python files")
         cached = store.exact_get(norm)
         assert cached == "find . -name '*.py'"
+
+    def test_tier3_skips_semantic_cache_when_alignment_low(self, tmp_path):
+        store = _make_store(tmp_path)
+        query_vec = _make_vec(seed=7)
+        cmd = "gsutil ls gs://wsi_bucket53/EGFR_SVS/*.svs"
+        cmd_vec = _orthogonal_vec(query_vec)
+
+        embedder = _make_mock_embedder(query_vec=query_vec)
+        embedder.top_k_similar.return_value = []
+        embedder.embed.side_effect = lambda text, model: (
+            cmd_vec if text == cmd else query_vec
+        )
+
+        provider = _make_mock_provider(cmd)
+        resolver = _make_resolver(store, embedder, provider)
+
+        ctx = _make_context()
+        resolver.resolve("list all .svs files", ctx)
+
+        norm = _normalize("list all .svs files")
+        assert store.exact_get(norm) == cmd
+        assert len(store.semantic_get_all()) == 0
 
     def test_tier3_provider_error_returns_error_result(self, tmp_path):
         store = _make_store(tmp_path)

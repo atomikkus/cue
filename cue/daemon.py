@@ -77,6 +77,7 @@ def _build_router():
         escalate_max_tokens=cfg.escalate.max_tokens,
         similarity_threshold=cfg.cache.similarity_threshold,
         history_threshold=cfg.cache.history_threshold,
+        alignment_threshold=cfg.cache.alignment_threshold,
         embedding_model=cfg.embeddings.model,
         danger_scan=cfg.safety.danger_scan,
         redact=cfg.safety.redact_secrets,

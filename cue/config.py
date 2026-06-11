@@ -69,6 +69,7 @@ key      = ""
 [cache]
 similarity_threshold = 0.92
 history_threshold    = 0.88
+alignment_threshold  = 0.78   # min query↔command similarity for semantic cache read/write
 db_path = "~/.config/cue/cache.db"
 history_max_entries  = 10000
 
@@ -123,6 +124,7 @@ class ProviderSpecificConfig:
 class CacheConfig:
     similarity_threshold: float = 0.92
     history_threshold: float = 0.88
+    alignment_threshold: float = 0.78
     db_path: str = "~/.config/cue/cache.db"
     history_max_entries: int = 10_000
 
@@ -220,6 +222,7 @@ def _parse_raw(raw: dict[str, Any]) -> Config:
         cfg.cache = CacheConfig(
             similarity_threshold=float(cache.get("similarity_threshold", 0.92)),
             history_threshold=float(cache.get("history_threshold", 0.88)),
+            alignment_threshold=float(cache.get("alignment_threshold", 0.78)),
             db_path=cache.get("db_path", "~/.config/cue/cache.db"),
             history_max_entries=int(cache.get("history_max_entries", 10_000)),
         )

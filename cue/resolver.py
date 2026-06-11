@@ -69,6 +69,7 @@ class Resolver:
         escalate_max_tokens: int,
         similarity_threshold: float = 0.92,
         history_threshold: float = 0.88,
+        alignment_threshold: float = 0.78,
         embedding_model: str = "all-MiniLM-L6-v2",
         danger_scan: bool = True,
         redact: bool = True,
@@ -85,6 +86,7 @@ class Resolver:
         self.escalate_max_tokens = escalate_max_tokens
         self.similarity_threshold = similarity_threshold
         self.history_threshold = history_threshold
+        self.alignment_threshold = alignment_threshold
         self.embedding_model = embedding_model
         self.danger_scan = danger_scan
         self.redact = redact
@@ -125,7 +127,7 @@ class Resolver:
 
             if query_vec is not None:
                 # --- Tier 1: semantic cache ---
-                result, _best_cache_score = self._tier1(query_vec, ctx_hash, ctx_sensitive)
+                result, _best_cache_score = self._tier1(query, query_vec, ctx_hash, ctx_sensitive)
                 if result:
                     self._log_telemetry(op, 1, 0, 0, t0)
                     return result
@@ -170,6 +172,7 @@ class Resolver:
 
     def _tier1(
         self,
+        query: str,
         query_vec: np.ndarray,
         ctx_hash: str | None,
         ctx_sensitive: bool,
@@ -179,31 +182,45 @@ class Resolver:
         if mat.shape[0] == 0:
             return None, 0.0
 
-        hits = self.embedder.top_k_similar(query_vec, mat, k=1)
+        k = min(5, mat.shape[0])
+        hits = self.embedder.top_k_similar(query_vec, mat, k=k)
         if not hits:
             return None, 0.0
 
-        best_idx, best_score = hits[0]
-        if best_score < self.similarity_threshold:
-            return None, best_score
+        best_score = hits[0][1]
+        for best_idx, score in hits:
+            if score < self.similarity_threshold:
+                break
 
-        row = rows[best_idx]
-        if ctx_sensitive and ctx_hash and row.get("context_hash") and row["context_hash"] != ctx_hash:
-            return None, best_score
+            row = rows[best_idx]
+            if ctx_sensitive and ctx_hash and row.get("context_hash") and row["context_hash"] != ctx_hash:
+                continue
 
-        cmd = row["command"]
-        if not is_likely_shell_command(cmd):
-            return None, best_score
+            cmd = row["command"]
+            if not is_likely_shell_command(cmd):
+                continue
 
-        self.store.semantic_update_hit(row["id"])
-        v = validate(cmd, danger_scan=self.danger_scan)
-        return ResolveResult(
-            command=v.safe_command,
-            raw_command=cmd,
-            tier=1,
-            confidence=best_score,
-            validation=v,
-        ), best_score
+            align = self._query_command_alignment(query_vec, cmd)
+            if align < self.alignment_threshold:
+                log.debug(
+                    "Tier 1 skip low alignment: query=%r cmd=%r align=%.3f",
+                    query[:60],
+                    cmd[:60],
+                    align,
+                )
+                continue
+
+            self.store.semantic_update_hit(row["id"])
+            v = validate(cmd, danger_scan=self.danger_scan)
+            return ResolveResult(
+                command=v.safe_command,
+                raw_command=cmd,
+                tier=1,
+                confidence=score,
+                validation=v,
+            ), best_score
+
+        return None, best_score
 
     def _tier2(
         self,
@@ -405,6 +422,15 @@ class Resolver:
     def _redact(self, text: str) -> str:
         return redact_secrets(text) if self.redact else text
 
+    def _query_command_alignment(self, query_vec: np.ndarray, command: str) -> float:
+        """Cosine similarity between the query embedding and the command text."""
+        try:
+            cmd_vec = self.embedder.embed(command, self.embedding_model)
+        except Exception as exc:
+            log.debug("Command embedding failed for alignment check: %s", exc)
+            return 0.0
+        return float(np.dot(query_vec.flatten(), cmd_vec.flatten()))
+
     def _build_user_message(
         self, query: str, context: ShellContext, history_hint: str | None, op: str
     ) -> str:
@@ -445,7 +471,17 @@ class Resolver:
         try:
             self.store.exact_put(norm, command, ctx_hash)
             if query_vec is not None:
-                self.store.semantic_put(query, query_vec, command, ctx_hash, provider, model)
+                align = self._query_command_alignment(query_vec, command)
+                if align >= self.alignment_threshold:
+                    self.store.semantic_put(
+                        query, query_vec, command, ctx_hash, provider, model
+                    )
+                else:
+                    log.debug(
+                        "Skip semantic cache write: low alignment (%.3f) for %r",
+                        align,
+                        query[:60],
+                    )
         except Exception as exc:
             log.warning("Cache write failed: %s", exc)
 
