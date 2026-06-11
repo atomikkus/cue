@@ -169,6 +169,9 @@ class TestIsLikelyShellCommand:
     def test_accepts_two_token_cli(self):
         assert is_likely_shell_command("git status")
 
+    def test_accepts_cd_builtin(self):
+        assert is_likely_shell_command("cd GitHub")
+
     def test_rejects_chatty_sentence(self):
         assert not is_likely_shell_command("list all pdf files")
 

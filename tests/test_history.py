@@ -43,7 +43,7 @@ class TestIngestHistoryAuto:
         zsh_hist = tmp_path / ".zsh_history"
         bash_hist = tmp_path / ".bash_history"
         zsh_hist.write_text(": 1:0;git status\n", encoding="utf-8")
-        bash_hist.write_text("docker ps\n", encoding="utf-8")
+        bash_hist.write_text("uname -a\n", encoding="utf-8")
         monkeypatch.setattr(history, "_ZSH_HISTORY_PATH", zsh_hist)
         monkeypatch.setattr(history, "_BASH_HISTORY_PATH", bash_hist)
 
@@ -59,7 +59,7 @@ class TestIngestHistoryAuto:
         zsh_hist = tmp_path / ".zsh_history"
         bash_hist = tmp_path / ".bash_history"
         zsh_hist.write_text(": 1:0;git status\n", encoding="utf-8")
-        bash_hist.write_text("docker ps\n", encoding="utf-8")
+        bash_hist.write_text("uname -a\n", encoding="utf-8")
         monkeypatch.setattr(history, "_ZSH_HISTORY_PATH", zsh_hist)
         monkeypatch.setattr(history, "_BASH_HISTORY_PATH", bash_hist)
 

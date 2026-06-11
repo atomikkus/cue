@@ -57,9 +57,13 @@ jobs:
           export HOME="${RUNNER_TEMP}/cue-home"
           mkdir -p "${HOME}"
           export CUE_CONFIG_DIR="${HOME}/.config/cue"
+          export CUE_SOCKET="${CUE_CONFIG_DIR}/daemon.sock"
+          export CUE_PID="${CUE_CONFIG_DIR}/daemon.pid"
           ./install.sh --no-daemon --shell bash
           export PATH="${CUE_CONFIG_DIR}/venv/bin:${PATH}"
-          cue --version
+          command -v cue
+          command -v cue-daemon
+          python -c "import cue; print('cue', cue.__file__)"
           cue-daemon start
           cue-daemon health
           cue doctor

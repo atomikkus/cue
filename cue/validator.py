@@ -49,6 +49,12 @@ _DANGER_KEYWORDS = frozenset([":(){ :|:& };:", "> /dev/sda"])
 
 _META_BINARIES = frozenset({"cue", "cue-daemon"})
 
+# POSIX shell builtins — not always present as standalone binaries (Linux has no /usr/bin/cd).
+_SHELL_BUILTINS = frozenset({
+    "cd", "pushd", "popd", "export", "unset", "source", "alias", "unalias",
+    "builtin", "command", "exec", "eval", "set", "umask", "wait", "read",
+})
+
 _SHELL_SIGNAL_RE = re.compile(
     r"(\./|\.\./|/|"
     r"-\w|"
@@ -90,7 +96,9 @@ def is_likely_shell_command(command: str) -> bool:
     if len(tokens) >= 2 and tokens[1] == ".":
         return True
 
-    if len(tokens) == 2 and shutil.which(leading) is not None:
+    if len(tokens) == 2 and (
+        shutil.which(leading) is not None or leading in _SHELL_BUILTINS
+    ):
         return True
 
     return False
