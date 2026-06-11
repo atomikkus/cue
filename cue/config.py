@@ -79,8 +79,8 @@ include_exit  = true
 history_lines = 1
 
 [embeddings]
-backend = "local"
-model   = "all-MiniLM-L6-v2"
+backend = "fastembed"
+model   = "BAAI/bge-small-en-v1.5"
 
 [safety]
 danger_scan    = true
@@ -141,8 +141,8 @@ class ContextConfig:
 
 @dataclass
 class EmbeddingsConfig:
-    backend: str = "local"
-    model: str = "all-MiniLM-L6-v2"
+    backend: str = "fastembed"
+    model: str = "BAAI/bge-small-en-v1.5"
 
 
 @dataclass
@@ -234,8 +234,8 @@ def _parse_raw(raw: dict[str, Any]) -> Config:
 
     if embeddings := raw.get("embeddings"):
         cfg.embeddings = EmbeddingsConfig(
-            backend=embeddings.get("backend", "local"),
-            model=embeddings.get("model", "all-MiniLM-L6-v2"),
+            backend=embeddings.get("backend", "fastembed"),
+            model=embeddings.get("model", "BAAI/bge-small-en-v1.5"),
         )
 
     if safety := raw.get("safety"):
