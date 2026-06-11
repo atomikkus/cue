@@ -87,7 +87,8 @@ def profile_has_hooks(shell: str) -> bool:
     if not path.is_file():
         return False
     text = path.read_text(encoding="utf-8", errors="replace")
-    return profile_hook_line(shell) in text
+    widget = CONFIG_DIR / widget_filename(shell)
+    return str(widget) in text or profile_hook_line(shell) in text or f"cue.{shell}" in text
 
 
 def _any_key_configured() -> bool:

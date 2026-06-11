@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 # install.sh — Install cue: daemon, shell hooks, default config
 #
-# Usage:
-#   ./install.sh                      # default install (Python from PATH)
-#   ./install.sh --python /usr/bin/python3.11
+# One-liner (from GitHub):
+#   curl -fsSL https://raw.githubusercontent.com/atomikkus/cue/main/install.sh | bash
+#
+# Local:
+#   ./install.sh
+#   ./install.sh --method pipx|uv|venv|auto
 #   ./install.sh --shell bash|zsh|auto
-#   ./install.sh --no-daemon          # install shell hooks only, start daemon manually
-#   ./install.sh --uninstall          # remove everything
+#   ./install.sh --no-daemon
+#   ./install.sh --uninstall
 
 set -euo pipefail
 
 CUE_VERSION="0.1.0"
+CUE_REPO_URL="${CUE_REPO_URL:-https://github.com/atomikkus/cue.git}"
+CUE_ARCHIVE_URL="${CUE_ARCHIVE_URL:-https://github.com/atomikkus/cue/archive/refs/heads/main.zip}"
 CUE_CONFIG_DIR=""
 CUE_VENV_DIR=""
 CUE_PATH_LINE=""
@@ -22,6 +27,9 @@ PYTHON="${PYTHON:-python3}"
 START_DAEMON=true
 UNINSTALL=false
 SHELL_CHOICE="auto"
+INSTALL_METHOD="${CUE_INSTALL_METHOD:-auto}"
+INSTALL_BACKEND=""
+SCRIPT_DIR=""
 
 # ---------------------------------------------------------------------------
 # Parse args
@@ -31,6 +39,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --python)     PYTHON="$2"; shift 2 ;;
         --shell)      SHELL_CHOICE="$2"; shift 2 ;;
+        --method)     INSTALL_METHOD="$2"; shift 2 ;;
         --no-daemon)  START_DAEMON=false; shift ;;
         --uninstall)  UNINSTALL=true; shift ;;
         -h|--help)
@@ -38,11 +47,12 @@ while [[ $# -gt 0 ]]; do
 Usage: ./install.sh [options]
 
 Options:
-  --python PATH     Python 3.11+ interpreter (default: python3)
+  --python PATH           Python 3.11+ interpreter (default: python3)
   --shell auto|zsh|bash   Shell integration target (default: auto from $SHELL)
-  --no-daemon       Skip daemon auto-start; install hooks only
-  --uninstall       Remove cue hooks and optionally ~/.config/cue
-  -h, --help        Show this help
+  --method auto|pipx|uv|venv   Install backend (default: auto — pipx, then uv, then venv)
+  --no-daemon             Skip daemon auto-start; install hooks only
+  --uninstall             Remove cue hooks and optionally ~/.config/cue
+  -h, --help              Show this help
 EOF
             exit 0
             ;;
@@ -67,18 +77,157 @@ resolve_config_dir() {
     if is_wsl && [[ "$CUE_CONFIG_DIR" == /mnt/* ]]; then
         local linux_home="/home/$(id -un)"
         if [[ -d "$linux_home" && -w "$linux_home" ]]; then
-            warn "WSL: Windows mounts (/mnt/c) break Python venvs — using ${linux_home}/.config/cue"
+            warn "WSL: using Linux home for config (${linux_home}/.config/cue)"
             CUE_CONFIG_DIR="${linux_home}/.config/cue"
         else
-            warn "WSL: installing on ${CUE_CONFIG_DIR} may fail (venv + pip break on /mnt/c)."
-            warn "  Use a Linux home: export CUE_CONFIG_DIR=/home/\$(whoami)/.config/cue"
+            warn "WSL: ${CUE_CONFIG_DIR} may fail — use export CUE_CONFIG_DIR=/home/\$(whoami)/.config/cue"
         fi
     fi
     export CUE_CONFIG_DIR
     CUE_VENV_DIR="${CUE_CONFIG_DIR}/venv"
-    CUE_PATH_LINE="export PATH=\"${CUE_CONFIG_DIR}/venv/bin:\$PATH\""
+    set_hook_lines_for_backend
+}
+
+set_hook_lines_for_backend() {
+    if [[ "$INSTALL_BACKEND" == "pipx" || "$INSTALL_BACKEND" == "uv" ]]; then
+        CUE_PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+    else
+        CUE_PATH_LINE="export PATH=\"${CUE_CONFIG_DIR}/venv/bin:\$PATH\""
+    fi
     CUE_ZSH_HOOK_LINE="source \"${CUE_CONFIG_DIR}/cue.zsh\""
     CUE_BASH_HOOK_LINE="source \"${CUE_CONFIG_DIR}/cue.bash\""
+}
+
+cue_path() {
+    export PATH="${HOME}/.local/bin:${CUE_CONFIG_DIR}/venv/bin:${PATH}"
+}
+
+resolve_install_source() {
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || SCRIPT_DIR=""
+    if [[ -n "$SCRIPT_DIR" && -f "${SCRIPT_DIR}/pyproject.toml" ]]; then
+        echo "$SCRIPT_DIR"
+    elif command -v git &>/dev/null; then
+        echo "git+${CUE_REPO_URL}"
+    else
+        echo "${CUE_ARCHIVE_URL}"
+    fi
+}
+
+ensure_pipx() {
+    if command -v pipx &>/dev/null; then
+        return 0
+    fi
+    local os distro
+    os="$(detect_os)"
+    distro="$(detect_distro_id)"
+    log "Installing pipx..."
+    if [[ "$os" == "linux" && "$distro" =~ ^(ubuntu|debian|pop|linuxmint)$ ]] && command -v apt-get &>/dev/null; then
+        if sudo -n apt-get install -qq -y pipx 2>/dev/null; then
+            command -v pipx &>/dev/null && return 0
+        fi
+    fi
+    if "$PYTHON" -m pip install --user pipx &>/dev/null \
+        || "$PYTHON" -m pip install --user pipx --break-system-packages &>/dev/null; then
+        "$PYTHON" -m pipx ensurepath &>/dev/null || true
+        export PATH="${HOME}/.local/bin:${PATH}"
+    fi
+    command -v pipx &>/dev/null
+}
+
+install_with_pipx() {
+    local source="$1"
+    ensure_pipx || return 1
+    log "Installing cue with pipx..."
+    if ! pipx install --force "$source"; then
+        return 1
+    fi
+    INSTALL_BACKEND="pipx"
+    set_hook_lines_for_backend
+    ok "cue installed with pipx (~/.local/bin)."
+    return 0
+}
+
+install_with_uv() {
+    local source="$1"
+    command -v uv &>/dev/null || return 1
+    log "Installing cue with uv..."
+    if ! uv tool install --force "$source"; then
+        return 1
+    fi
+    INSTALL_BACKEND="uv"
+    set_hook_lines_for_backend
+    ok "cue installed with uv (~/.local/bin)."
+    return 0
+}
+
+install_with_venv() {
+    local source="$1"
+    create_venv
+    local py
+    py="$(venv_python)"
+    log "Installing cue into venv..."
+    "$py" -m pip install --quiet --upgrade pip
+    "$py" -m pip install --quiet "$source"
+    INSTALL_BACKEND="venv"
+    set_hook_lines_for_backend
+    ok "cue installed in ${CUE_VENV_DIR}."
+}
+
+install_cue_package() {
+    local source method
+    source="$(resolve_install_source)"
+    method="$INSTALL_METHOD"
+
+    case "$method" in
+        pipx) install_with_pipx "$source" ;;
+        uv)   install_with_uv "$source" || install_with_venv "$source" ;;
+        venv) install_with_venv "$source" ;;
+        auto)
+            install_with_pipx "$source" \
+                || install_with_uv "$source" \
+                || install_with_venv "$source"
+            ;;
+        *)
+            echo "Error: --method must be auto, pipx, uv, or venv (got: $method)" >&2
+            exit 1
+            ;;
+    esac
+}
+
+cue_python() {
+    cue_path
+    local venv=""
+    if [[ "$INSTALL_BACKEND" == "pipx" ]]; then
+        venv="$(pipx environment cue -e PIPX_VENV_DIR 2>/dev/null || true)"
+    elif [[ "$INSTALL_BACKEND" == "uv" ]]; then
+        if [[ -x "${HOME}/.local/share/uv/tools/cue/bin/python" ]]; then
+            venv="${HOME}/.local/share/uv/tools/cue"
+        fi
+    fi
+    if [[ -n "$venv" && -x "${venv}/bin/python" ]]; then
+        echo "${venv}/bin/python"
+        return 0
+    fi
+    if [[ "$INSTALL_BACKEND" == "venv" ]]; then
+        venv_python
+        return 0
+    fi
+    command -v python3 || command -v python
+}
+
+write_default_config() {
+    if [[ -f "${CUE_CONFIG_DIR}/config.toml" ]]; then
+        ok "Config already exists, skipping."
+        return 0
+    fi
+    "$(cue_python)" -c "from cue.config import load; load()" 2>/dev/null || true
+    ok "Default config written to ${CUE_CONFIG_DIR}/config.toml"
+}
+
+run_shell_install() {
+    local shell_name="$1"
+    cue_path
+    "$(cue_python)" -m cue.shell_install "$shell_name"
 }
 
 detect_os() {
@@ -343,9 +492,21 @@ resolve_config_dir
 if [[ "$UNINSTALL" == "true" ]]; then
     log "Uninstalling cue..."
 
+    cue_path
     local_daemon="$(daemon_bin || true)"
     if [[ -n "$local_daemon" ]]; then
         "$local_daemon" stop 2>/dev/null || true
+    elif command -v cue-daemon &>/dev/null; then
+        cue-daemon stop 2>/dev/null || true
+    fi
+
+    if command -v pipx &>/dev/null && pipx list 2>/dev/null | grep -qE '^package cue '; then
+        pipx uninstall cue 2>/dev/null || true
+        ok "Removed pipx package"
+    fi
+    if command -v uv &>/dev/null && uv tool list 2>/dev/null | grep -q cue; then
+        uv tool uninstall cue 2>/dev/null || true
+        ok "Removed uv tool"
     fi
 
     remove_cue_lines_from_file "${ZDOTDIR:-$HOME}/.zshrc"
@@ -382,29 +543,15 @@ ok "Shell integration: ${TARGET_SHELL}"
 
 require_python
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 mkdir -p "$CUE_CONFIG_DIR"
 ok "Config dir: $CUE_CONFIG_DIR"
 
-create_venv
-VENV_PYTHON="$(venv_python)"
-
-log "Installing cue Python package..."
-"$VENV_PYTHON" -m pip install --quiet --upgrade pip
-"$VENV_PYTHON" -m pip install --quiet "$SCRIPT_DIR"
-ok "cue package installed in venv."
-
-if [[ ! -f "${CUE_CONFIG_DIR}/config.toml" ]]; then
-    "$VENV_PYTHON" -c "from cue.config import load; load()" 2>/dev/null || true
-    ok "Default config written to ${CUE_CONFIG_DIR}/config.toml"
-else
-    ok "Config already exists, skipping."
-fi
+install_cue_package
+write_default_config
 
 if [[ "$TARGET_SHELL" == "zsh" || "$TARGET_SHELL" == "bash" ]]; then
     log "Installing ${TARGET_SHELL} widget..."
-    if ! "$VENV_PYTHON" -m cue.shell_install "$TARGET_SHELL"; then
+    if ! run_shell_install "$TARGET_SHELL"; then
         echo "Error: failed to install ${TARGET_SHELL} widget." >&2
         exit 1
     fi
@@ -430,51 +577,36 @@ fi
 
 if [[ "$START_DAEMON" == "true" ]]; then
     log "Starting cue daemon..."
-    DAEMON_BIN="$(daemon_bin || true)"
-
-    if [[ -n "$DAEMON_BIN" ]]; then
-        "$DAEMON_BIN" stop 2>/dev/null || true
-        "$DAEMON_BIN" start
-        if "$DAEMON_BIN" health &>/dev/null 2>&1; then
+    cue_path
+    if command -v cue-daemon &>/dev/null; then
+        cue-daemon stop 2>/dev/null || true
+        cue-daemon start
+        if cue-daemon health &>/dev/null 2>&1; then
             ok "Daemon started."
         else
-            warn "Daemon may still be loading. Check with: cue-daemon health"
+            warn "Daemon may still be starting. Check: cue-daemon health"
         fi
     else
-        warn "cue-daemon not found. Run: ${CUE_VENV_DIR}/bin/cue-daemon start"
+        warn "cue-daemon not found on PATH. Open a new terminal and run: cue-daemon start"
     fi
 fi
+
+PROFILE="$(profile_for_shell "$TARGET_SHELL" 2>/dev/null || echo "$HOME/.bashrc")"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  cue installed successfully!"
+echo "  cue installed!"
 echo ""
-echo "  Next steps:"
-echo "  1. Configure provider, API key, and model:"
-echo "     cue setup"
-echo ""
-if [[ "$TARGET_SHELL" == "bash" ]]; then
-    echo "  2. Reload your shell:"
-    echo "     source $(profile_for_shell bash)"
-elif [[ "$TARGET_SHELL" == "zsh" ]]; then
-    echo "  2. Reload your shell:"
-    echo "     source $(profile_for_shell zsh)"
-else
-    echo "  2. Ensure ${CUE_VENV_DIR}/bin is on your PATH, then use:"
-    echo "     cue generate \"your intent\""
-fi
-echo ""
-echo "  3. Verify install:      cue doctor"
 if [[ "$TARGET_SHELL" == "zsh" || "$TARGET_SHELL" == "bash" ]]; then
-    echo "  4. Press Ctrl+K at any prompt and type your intent."
+    echo "  Open a new terminal (or: exec \$SHELL -l)"
+    echo "  Press Ctrl+K at any prompt."
     if [[ "$OS" == "darwin" ]]; then
-        echo "     (In Cursor, rebind if ^K is stolen: export CUE_KEY_GENERATE='^X^K')"
+        echo "  Cursor steals ^K?  export CUE_KEY_GENERATE='^X^K' in ${PROFILE}"
     fi
+else
+    echo "  Open a new terminal, then: cue generate \"your intent\""
 fi
 echo ""
-echo "  Binaries:             ${CUE_VENV_DIR}/bin/"
-echo "  Update shell widget:  cue install-shell"
-echo "  Check daemon status:  cue-daemon health"
-echo "  View stats:           cue stats"
-echo "  Reload config:        kill -HUP \$(cat ${CUE_CONFIG_DIR}/daemon.pid)"
+echo "  Optional — cloud LLM:  cue setup"
+echo "  Verify:                cue doctor"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

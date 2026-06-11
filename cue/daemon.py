@@ -59,8 +59,7 @@ def _build_router():
         history_max_entries=cfg.cache.history_max_entries,
     )
 
-    # Eagerly load the embedding model (pays the import cost now, not on first query)
-    emb_mod.preload(cfg.embeddings.model)
+    # Embedding model loads lazily on first Tier 1/2/3 query (fast daemon startup).
 
     # Provider registry
     registry = build_registry(cfg)
@@ -306,7 +305,7 @@ def _cmd_start(socket_path: Path, pid_path: Path, log_level: str, *, foreground:
         print("Run with logs visible: cue-daemon start --foreground")
         sys.exit(1)
 
-    print("cue daemon is still starting (embedding model may be loading).")
+    print("cue daemon is still starting.")
     print("Check status with: cue-daemon health")
 
 
