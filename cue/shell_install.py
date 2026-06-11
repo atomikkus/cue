@@ -177,7 +177,11 @@ def run_doctor() -> int:
 
     if shell == "bash" and widget and widget.is_file():
         text = widget.read_text(encoding="utf-8", errors="replace")
-        has_readline = "_cue_generate" in text and "READLINE_LINE" in text
+        has_readline = (
+            "_cue_generate" in text
+            and "READLINE_LINE" in text
+            and "_cue_read_line" in text
+        )
         check(
             "Bash Readline widget",
             has_readline,

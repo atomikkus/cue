@@ -65,7 +65,9 @@ class TestInstallShellWidget:
         assert dest.is_file()
         text = dest.read_text(encoding="utf-8")
         assert "_cue_generate" in text
+        assert "_cue_read_line" in text
         assert "READLINE_LINE" in text
+        assert "read -e -r" not in text
 
     def test_installs_zsh_widget(self, tmp_path: Path):
         dest = install_shell_widget("zsh", target_dir=tmp_path)

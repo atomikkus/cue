@@ -139,6 +139,44 @@ _cue_set_buffer() {
     READLINE_POINT=${#READLINE_LINE}
 }
 
+# Read a line from /dev/tty without readline.  bind -x handlers must not use
+# readline-backed input — Enter would accept READLINE_LINE and auto-execute.
+_cue_read_line() {
+    local prompt="${1:-cue> }" line="" char tty=/dev/tty
+    [[ -r "$tty" ]] || tty=/dev/stdin
+    printf '%s' "$prompt" >"$tty"
+    while true; do
+        if ! IFS= read -r -n 1 char <"$tty"; then
+            printf '\n' >"$tty"
+            return 1
+        fi
+        case "$char" in
+            ''|$'\n'|$'\r') break ;;
+            $'\003') printf '^C\n' >"$tty"; return 1 ;;
+            $'\033') return 1 ;;
+            $'\177'|$'\b')
+                if [[ -n "$line" ]]; then
+                    line="${line%?}"
+                    printf '\b \b' >"$tty"
+                fi
+                ;;
+            $'\025')
+                while [[ -n "$line" ]]; do
+                    line="${line%?}"
+                    printf '\b \b' >"$tty"
+                done
+                ;;
+            *)
+                line+="$char"
+                printf '%s' "$char" >"$tty"
+                ;;
+        esac
+    done
+    printf '\n' >"$tty"
+    REPLY="$line"
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # Ctrl+K — generate command from natural language
 # ---------------------------------------------------------------------------
@@ -146,10 +184,13 @@ _cue_set_buffer() {
 _cue_generate() {
     local query response command saved_buffer="${READLINE_LINE:-}"
 
-    if ! read -e -r -p $'cue> ' query; then
+    READLINE_LINE=""
+    READLINE_POINT=0
+    if ! _cue_read_line "cue> "; then
         _cue_set_buffer "$saved_buffer"
         return 0
     fi
+    query="$REPLY"
     query="${query#"${query%%[![:space:]]*}"}"
     if [[ -z "$query" ]]; then
         _cue_set_buffer "$saved_buffer"
@@ -199,8 +240,8 @@ _cue_explain() {
     response="$(_cue_send "$req_json" 2>/dev/null)"
     explanation="$(_cue_parse_command "$response")"
 
-    echo ""
-    echo "cue explain: $explanation"
+    echo "" >&2
+    echo "cue explain: $explanation" >&2
     _cue_set_buffer "$saved"
 }
 
