@@ -33,17 +33,26 @@ Embeddings run locally. The network is touched only when local tiers miss.
 
 ## Install
 
-Works on **macOS and Linux** with the same one-command installer. Inline Ctrl+K is supported in **zsh** (macOS default) and **bash** (typical Linux default).
+Works on **macOS and Linux**. One command:
 
 ```bash
-git clone <your-repo-url> cue
-cd cue
-chmod +x install.sh
-./install.sh
-source ~/.zshrc    # zsh users
-# or
-source ~/.bashrc   # bash users
+curl -fsSL https://raw.githubusercontent.com/atomikkus/cue/main/install.sh | bash
 ```
+
+Then **open a new terminal** and press **Ctrl+K**.
+
+Inline Ctrl+K works in **zsh** and **bash**. The installer uses **pipx** when available (isolated, no manual venv), then falls back to **uv** or a local venv.
+
+<details>
+<summary><strong>Install from a clone</strong></summary>
+
+```bash
+git clone https://github.com/atomikkus/cue.git
+cd cue
+./install.sh
+```
+
+</details>
 
 ### Prerequisites
 
@@ -54,7 +63,7 @@ source ~/.bashrc   # bash users
 | **Fedora** | `sudo dnf install python3 python3-pip` |
 | **Arch** | `sudo pacman -S python python-pip` |
 
-The installer handles PEP 668 Python, an isolated venv at `~/.config/cue/venv`, shell hooks for your active shell, and the background daemon. If your login shell is neither zsh nor bash, the CLI still installs — use `cue generate "..."` from any shell.
+The installer handles Python deps, shell hooks, and the background daemon automatically. Config and widgets live in `~/.config/cue/`. If your login shell is neither zsh nor bash, use `cue generate "..."` from any terminal.
 
 ```bash
 cue doctor                      # verify daemon, widget, hooks, keybindings
@@ -65,7 +74,7 @@ cue generate "list files here"  # smoke test from the terminal
 <summary><strong>Install options</strong></summary>
 
 ```bash
-./install.sh --python /path/to/python3.11   # specific Python
+./install.sh --method pipx                  # force pipx (default: auto)
 ./install.sh --shell bash                   # force bash hooks (default: auto from $SHELL)
 ./install.sh --no-daemon                    # hooks only; start daemon manually
 ./install.sh --uninstall                    # remove hooks and optionally ~/.config/cue
