@@ -50,10 +50,26 @@ CREATE TABLE IF NOT EXISTS semantic_cache (
     context_hash  TEXT,
     provider      TEXT,
     model         TEXT,
+    provenance    TEXT NOT NULL DEFAULT 'proven',
     hits          INTEGER DEFAULT 1,
     created_at    INTEGER,
     last_used     INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS pending_cache (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    query_norm        TEXT NOT NULL,
+    query             TEXT NOT NULL,
+    embedding         BLOB NOT NULL,
+    embedding_dim     INTEGER NOT NULL DEFAULT 384,
+    suggested_command TEXT NOT NULL,
+    context_hash      TEXT,
+    provider          TEXT,
+    model             TEXT,
+    created_at        INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_created ON pending_cache(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS history_index (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,6 +185,14 @@ class Store:
                 self._conn.execute(
                     "UPDATE semantic_cache SET embedding_dim = length(embedding) / 4 WHERE embedding_dim = 384"
                 )
+            if "provenance" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE semantic_cache ADD COLUMN provenance TEXT NOT NULL DEFAULT 'llm'"
+                )
+                self._conn.execute(
+                    "UPDATE semantic_cache SET provenance = 'llm' WHERE provenance IS NULL OR provenance = ''"
+                )
+                self._semantic_caches.clear()
 
         if "history_index" in tables:
             cols = {row[1] for row in self._conn.execute("PRAGMA table_info(history_index)")}
@@ -195,11 +219,8 @@ class Store:
             self._conn.close()
 
     def _invalidate_semantic_cache(self, context_hash: str | None = None) -> None:
-        if context_hash is None:
-            self._semantic_caches.clear()
-        else:
-            self._semantic_caches.pop(context_hash, None)
-            self._semantic_caches.pop(None, None)
+        del context_hash
+        self._semantic_caches.clear()
 
     def _invalidate_history_cache(self) -> None:
         self._history_cache.invalidate()
@@ -245,22 +266,26 @@ class Store:
     # ------------------------------------------------------------------
 
     def semantic_get_all(self, context_hash: str | None = None) -> list[dict]:
-        """Load semantic cache rows (embedding, command, context_hash)."""
-        cache_key = context_hash if context_hash else None
+        """Load user-proven semantic cache rows (embedding, command, context_hash)."""
+        cache_key = ("proven", context_hash if context_hash else None)
         cached = self._semantic_caches.get(cache_key)
-        if cached and cached.rows:
+        if cached is not None:
             return cached.rows
 
         with self._lock:
             if context_hash:
                 rows = self._conn.execute(
-                    "SELECT id, embedding, embedding_dim, command, context_hash FROM semantic_cache "
-                    "WHERE context_hash IS NULL OR context_hash=?",
+                    """SELECT id, embedding, embedding_dim, command, context_hash
+                       FROM semantic_cache
+                       WHERE provenance = 'proven'
+                         AND (context_hash IS NULL OR context_hash = ?)""",
                     (context_hash,),
                 ).fetchall()
             else:
                 rows = self._conn.execute(
-                    "SELECT id, embedding, embedding_dim, command, context_hash FROM semantic_cache"
+                    """SELECT id, embedding, embedding_dim, command, context_hash
+                       FROM semantic_cache
+                       WHERE provenance = 'proven'"""
                 ).fetchall()
             result = [dict(r) for r in rows]
 
@@ -273,7 +298,7 @@ class Store:
     ) -> tuple[list[dict], np.ndarray]:
         """Return rows and stacked embedding matrix, filtering dim mismatches."""
         rows = self.semantic_get_all(context_hash)
-        cache_key = context_hash if context_hash else None
+        cache_key = ("proven", context_hash if context_hash else None)
         mc = self._semantic_caches.setdefault(cache_key, _MatrixCache())
 
         if mc.matrix is not None and len(mc.rows) == len(rows):
@@ -311,6 +336,8 @@ class Store:
         context_hash: str | None = None,
         provider: str = "",
         model: str = "",
+        *,
+        provenance: str = "proven",
     ) -> None:
         now = int(time.time())
         blob = embedding.astype(np.float32).tobytes()
@@ -318,11 +345,78 @@ class Store:
         with self._tx():
             self._conn.execute(
                 """INSERT INTO semantic_cache
-                   (query, embedding, embedding_dim, command, context_hash, provider, model, created_at, last_used)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (query, blob, dim, command, context_hash, provider, model, now, now),
+                   (query, embedding, embedding_dim, command, context_hash, provider, model,
+                    provenance, created_at, last_used)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (query, blob, dim, command, context_hash, provider, model, provenance, now, now),
             )
         self._invalidate_semantic_cache(context_hash)
+
+    # ------------------------------------------------------------------
+    # Pending cache (LLM suggestions awaiting user execution)
+    # ------------------------------------------------------------------
+
+    def pending_put(
+        self,
+        query_norm: str,
+        query: str,
+        embedding: np.ndarray,
+        suggested_command: str,
+        context_hash: str | None = None,
+        provider: str = "",
+        model: str = "",
+    ) -> None:
+        now = int(time.time())
+        blob = embedding.astype(np.float32).tobytes()
+        dim = int(embedding.shape[0])
+        with self._tx():
+            self._conn.execute(
+                """INSERT INTO pending_cache
+                   (query_norm, query, embedding, embedding_dim, suggested_command,
+                    context_hash, provider, model, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    query_norm,
+                    query,
+                    blob,
+                    dim,
+                    suggested_command,
+                    context_hash,
+                    provider,
+                    model,
+                    now,
+                ),
+            )
+
+    def pending_list_recent(self, max_age_seconds: int) -> list[dict]:
+        cutoff = int(time.time()) - max_age_seconds
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT id, query_norm, query, embedding, embedding_dim, suggested_command,
+                          context_hash, provider, model, created_at
+                   FROM pending_cache
+                   WHERE created_at >= ?
+                   ORDER BY created_at DESC""",
+                (cutoff,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def pending_delete(self, row_id: int) -> None:
+        with self._tx():
+            self._conn.execute("DELETE FROM pending_cache WHERE id=?", (row_id,))
+
+    def pending_prune_older_than(self, max_age_seconds: int) -> int:
+        cutoff = int(time.time()) - max_age_seconds
+        with self._tx():
+            cur = self._conn.execute(
+                "DELETE FROM pending_cache WHERE created_at < ?", (cutoff,)
+            )
+            return cur.rowcount
+
+    def pending_count(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) AS n FROM pending_cache").fetchone()
+            return int(row["n"]) if row else 0
 
     def semantic_update_hit(self, row_id: int) -> None:
         now = int(time.time())

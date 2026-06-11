@@ -336,7 +336,7 @@ class TestTier3:
         escalate.generate.assert_called_once()
         assert result.command == "echo 'fixed'"
 
-    def test_tier3_writes_to_cache(self, tmp_path):
+    def test_tier3_queues_pending_not_exact(self, tmp_path):
         store = _make_store(tmp_path)
         embedder = _make_mock_embedder()
         embedder.top_k_similar.return_value = []
@@ -347,12 +347,12 @@ class TestTier3:
         ctx = _make_context()
         resolver.resolve("find python files", ctx)
 
-        # Should be in exact cache now
         norm = _normalize("find python files")
-        cached = store.exact_get(norm)
-        assert cached == "find . -name '*.py'"
+        assert store.exact_get(norm) is None
+        assert store.pending_count() == 1
+        assert len(store.semantic_get_all()) == 0
 
-    def test_tier3_skips_semantic_cache_when_alignment_low(self, tmp_path):
+    def test_tier3_queues_pending_when_alignment_low(self, tmp_path):
         store = _make_store(tmp_path)
         query_vec = _make_vec(seed=7)
         cmd = "gsutil ls gs://wsi_bucket53/EGFR_SVS/*.svs"
@@ -371,7 +371,8 @@ class TestTier3:
         resolver.resolve("list all .svs files", ctx)
 
         norm = _normalize("list all .svs files")
-        assert store.exact_get(norm) == cmd
+        assert store.exact_get(norm) is None
+        assert store.pending_count() == 1
         assert len(store.semantic_get_all()) == 0
 
     def test_tier3_provider_error_returns_error_result(self, tmp_path):

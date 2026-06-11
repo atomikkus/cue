@@ -18,7 +18,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from cue.cache_promotion import (
+    PENDING_TTL_SECONDS,
+    REJECTION_WINDOW_SECONDS,
+    commands_match,
+    normalize_command_for_match,
+)
 from cue.context import ShellContext, is_context_sensitive, redact_secrets
+from cue.store import blob_to_vec
 from cue.providers.base import (
     DEFAULT_FEW_SHOT,
     SYSTEM_PROMPT,
@@ -309,8 +316,10 @@ class Resolver:
 
         if op == "generate":
             ctx_hash = context.context_bucket_hash() if is_context_sensitive(query) else None
-            self._write_caches(norm, query, query_vec, gen_result.text, ctx_hash,
-                               gen_result.provider, gen_result.model)
+            self._queue_pending(
+                norm, query, query_vec, gen_result.text, ctx_hash,
+                gen_result.provider, gen_result.model,
+            )
 
         return self._result_from_text(gen_result, op, validation=validation)
 
@@ -369,8 +378,10 @@ class Resolver:
 
         if op == "generate":
             ctx_hash = context.context_bucket_hash() if is_context_sensitive(query) else None
-            self._write_caches(norm, query, query_vec, gen_result.text, ctx_hash,
-                               gen_result.provider, gen_result.model)
+            self._queue_pending(
+                norm, query, query_vec, gen_result.text, ctx_hash,
+                gen_result.provider, gen_result.model,
+            )
 
         return self._result_from_text(
             gen_result, op, validation=validation, confidence=0.85
@@ -458,7 +469,91 @@ class Resolver:
 
         return "\n".join(parts)
 
-    def _write_caches(
+    def promote_from_execution(self, executed_command: str, exit_code: int) -> bool:
+        """Promote a pending LLM suggestion after the user runs it; prune on reject."""
+        executed = executed_command.strip()
+        if not executed or not is_likely_shell_command(executed):
+            return False
+
+        try:
+            self.store.pending_prune_older_than(PENDING_TTL_SECONDS)
+            pending = self.store.pending_list_recent(PENDING_TTL_SECONDS)
+            if not pending:
+                return False
+
+            now = time.time()
+            for row in pending:
+                if not commands_match(executed, row["suggested_command"]):
+                    continue
+
+                self.store.pending_delete(row["id"])
+                if exit_code != 0:
+                    log.debug("Pending cache rejected: command failed (exit %d)", exit_code)
+                    return False
+
+                command = normalize_command_for_match(executed)
+                query_vec = blob_to_vec(row["embedding"], expected_dim=row.get("embedding_dim"))
+                if query_vec is None:
+                    query_vec = blob_to_vec(row["embedding"])
+                if query_vec is None:
+                    log.warning("Pending promotion skipped: bad embedding for %r", row["query"][:60])
+                    return False
+
+                self._promote_proven(
+                    row["query_norm"],
+                    row["query"],
+                    query_vec,
+                    command,
+                    row.get("context_hash"),
+                    row.get("provider") or "",
+                    row.get("model") or "",
+                )
+                log.info("Promoted proven cache for query %r", row["query"][:60])
+                return True
+
+            recent = [r for r in pending if now - r["created_at"] <= REJECTION_WINDOW_SECONDS]
+            if recent:
+                for row in recent:
+                    self.store.pending_delete(row["id"])
+                log.debug(
+                    "Cleared %d pending cache row(s): user ran a different command",
+                    len(recent),
+                )
+        except Exception as exc:
+            log.warning("Pending cache promotion failed: %s", exc)
+        return False
+
+    def _promote_proven(
+        self,
+        norm: str,
+        query: str,
+        query_vec: np.ndarray,
+        command: str,
+        ctx_hash: str | None,
+        provider: str,
+        model: str,
+    ) -> None:
+        """Write user-proven mappings to exact + semantic cache."""
+        self.store.exact_put(norm, command, ctx_hash)
+        align = self._query_command_alignment(query_vec, command)
+        if align >= self.alignment_threshold:
+            self.store.semantic_put(
+                query,
+                query_vec,
+                command,
+                ctx_hash,
+                provider,
+                model,
+                provenance="proven",
+            )
+        else:
+            log.debug(
+                "Promoted exact only: low alignment (%.3f) for %r",
+                align,
+                query[:60],
+            )
+
+    def _queue_pending(
         self,
         norm: str,
         query: str,
@@ -468,22 +563,18 @@ class Resolver:
         provider: str,
         model: str,
     ) -> None:
+        """Queue an LLM suggestion for promotion after the user executes it."""
+        vec = query_vec
+        if vec is None:
+            try:
+                vec = self.embedder.embed(query, self.embedding_model)
+            except Exception as exc:
+                log.debug("Pending queue skipped: embedding failed: %s", exc)
+                return
         try:
-            self.store.exact_put(norm, command, ctx_hash)
-            if query_vec is not None:
-                align = self._query_command_alignment(query_vec, command)
-                if align >= self.alignment_threshold:
-                    self.store.semantic_put(
-                        query, query_vec, command, ctx_hash, provider, model
-                    )
-                else:
-                    log.debug(
-                        "Skip semantic cache write: low alignment (%.3f) for %r",
-                        align,
-                        query[:60],
-                    )
+            self.store.pending_put(norm, query, vec, command, ctx_hash, provider, model)
         except Exception as exc:
-            log.warning("Cache write failed: %s", exc)
+            log.warning("Pending cache queue failed: %s", exc)
 
     def _log_telemetry(
         self, op: str, tier: int, tokens_in: int, tokens_out: int, t0: float

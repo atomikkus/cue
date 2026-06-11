@@ -122,14 +122,20 @@ class Router:
         if not command:
             return {"ok": True, "indexed": False}
 
+        from cue.context import from_client_payload  # noqa: PLC0415
         from cue.history import index_single_command  # noqa: PLC0415
+
+        context = from_client_payload(request.get("context", {}))
+        exit_code = int(request.get("exit_code", context.last_exit_code))
+
+        promoted = self.resolver.promote_from_execution(command, exit_code)
         index_single_command(
             command,
             self.store,
             self.embedder.embed,
             self.embedding_model,
         )
-        return {"ok": True, "indexed": True}
+        return {"ok": True, "indexed": True, "promoted": promoted}
 
     def _handle_health(self) -> dict:
         uptime = int(time.time() - self._start_time)
@@ -137,6 +143,7 @@ class Router:
             "ok": True,
             "uptime_seconds": uptime,
             "history_entries": self.store.history_count(),
+            "pending_cache_entries": self.store.pending_count(),
         }
 
     def _handle_stats(self) -> dict:
