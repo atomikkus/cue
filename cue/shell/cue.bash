@@ -234,7 +234,8 @@ _cue_prompt_command() {
         CUE_REQ_COMMAND="$last_cmd"
         local req_json
         req_json="$(_cue_make_request index_cmd)"
-        ( _cue_send "$req_json" &>/dev/null ) &
+        # Must be synchronous — background subshell often never completes.
+        _cue_send "$req_json" >/dev/null 2>&1 || true
     fi
 }
 

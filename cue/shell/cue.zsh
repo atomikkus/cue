@@ -98,9 +98,11 @@ _cue_make_request() {
     [[ -n "${CUE_REQ_QUERY:-}" ]] && env_args+=(CUE_REQ_QUERY="$CUE_REQ_QUERY")
     [[ -n "${CUE_REQ_BUFFER:-}" ]] && env_args+=(CUE_REQ_BUFFER="$CUE_REQ_BUFFER")
     [[ -n "${CUE_REQ_COMMAND:-}" ]] && env_args+=(CUE_REQ_COMMAND="$CUE_REQ_COMMAND")
+    [[ -n "${CUE_SESSION_QUERY:-}" ]] && env_args+=(CUE_SESSION_QUERY="$CUE_SESSION_QUERY")
+    [[ -n "${CUE_SESSION_SUGGESTION:-}" ]] && env_args+=(CUE_SESSION_SUGGESTION="$CUE_SESSION_SUGGESTION")
     env_args+=(CUE_LAST_EXIT="${CUE_LAST_EXIT:-0}")
     REPLY="$(env "${env_args[@]}" python3 - "$op" <<'PYEOF'
-import json, os, subprocess, sys
+import json, os, subprocess, sys, time
 
 op = sys.argv[1]
 cwd = os.getcwd()
@@ -144,9 +146,62 @@ if os.environ.get("CUE_REQ_BUFFER"):
     req["buffer"] = os.environ["CUE_REQ_BUFFER"]
 if os.environ.get("CUE_REQ_COMMAND"):
     req["command"] = os.environ["CUE_REQ_COMMAND"]
+if op == "index_cmd":
+    session_path = os.path.join(os.path.expanduser("~/.config/cue"), "last_session.json")
+    if os.path.isfile(session_path):
+        try:
+            with open(session_path, encoding="utf-8") as fh:
+                sess = json.load(fh)
+            if time.time() - float(sess.get("ts", 0)) <= 300:
+                query = sess.get("query", "")
+                suggestion = sess.get("suggestion", "")
+                if query and suggestion:
+                    req["cue_session"] = {
+                        "query": query,
+                        "suggestion": suggestion,
+                        "ts": sess.get("ts", 0),
+                    }
+        except Exception:
+            pass
+elif os.environ.get("CUE_SESSION_QUERY") and os.environ.get("CUE_SESSION_SUGGESTION"):
+    req["cue_session"] = {
+        "query": os.environ["CUE_SESSION_QUERY"],
+        "suggestion": os.environ["CUE_SESSION_SUGGESTION"],
+    }
 print(json.dumps(req))
 PYEOF
 )"
+}
+
+_cue_session_file() {
+    print -r -- "${CUE_CONFIG_DIR:-${HOME}/.config/cue}/last_session.json"
+}
+
+_cue_write_session() {
+    local query="$1" suggestion="$2"
+    local session_file
+    session_file="$(_cue_session_file)"
+    mkdir -p "${session_file:h}"
+    CUE_SESSION_QUERY="$query" CUE_SESSION_SUGGESTION="$suggestion" _cue_python - "$session_file" <<'PYEOF'
+import json, os, sys, time
+path = sys.argv[1]
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(
+        {
+            "query": os.environ["CUE_SESSION_QUERY"],
+            "suggestion": os.environ["CUE_SESSION_SUGGESTION"],
+            "ts": time.time(),
+        },
+        fh,
+    )
+PYEOF
+}
+
+_cue_clear_session() {
+    local session_file
+    session_file="$(_cue_session_file)"
+    [[ -f "$session_file" ]] && rm -f "$session_file"
+    unset CUE_SESSION_QUERY CUE_SESSION_SUGGESTION
 }
 
 _cue_generate() {
@@ -200,6 +255,7 @@ _cue_generate() {
     BUFFER="$command"
     zle end-of-line
     zle redisplay
+    _cue_write_session "$query" "$command"
 }
 
 # ---------------------------------------------------------------------------
@@ -269,17 +325,43 @@ _cue_fix_last() {
 # precmd hook — incrementally index each new command
 # ---------------------------------------------------------------------------
 
+_cue_last_ran_command=""
+
+_cue_preexec() {
+    _cue_last_ran_command="$1"
+}
+
+_cue_last_history_cmd() {
+    local last_cmd="${_cue_last_ran_command}"
+    if [[ -z "$last_cmd" ]]; then
+        last_cmd="${history[1]}"
+    fi
+    if [[ -z "$last_cmd" ]]; then
+        last_cmd="$(fc -ln -1 2>/dev/null)"
+        last_cmd="${last_cmd#*[[:space:]]}"
+    fi
+    REPLY="${last_cmd#"${last_cmd%%[![:space:]]*}"}"
+}
+
 _cue_precmd() {
     CUE_LAST_EXIT=$?
 
-    local last_cmd="${history[1]}"
+    _cue_last_history_cmd
+    local last_cmd="$REPLY"
+    _cue_last_ran_command=""
     if [[ -n "$last_cmd" && -S "$CUE_SOCKET" ]]; then
         unset CUE_REQ_QUERY CUE_REQ_BUFFER
         CUE_REQ_COMMAND="$last_cmd"
-        local req_json
+        local session_file had_session=0 req_json response
+        session_file="$(_cue_session_file)"
+        [[ -f "$session_file" ]] && had_session=1
         _cue_make_request index_cmd
         req_json="$REPLY"
-        ( _cue_send "$req_json" &>/dev/null ) &!
+        if response="$(_cue_send "$req_json" 2>/dev/null)"; then
+            if (( had_session )); then
+                _cue_clear_session
+            fi
+        fi
     fi
 }
 
@@ -296,4 +378,5 @@ bindkey "${CUE_KEY_EXPLAIN:-^E}"  _cue_explain
 bindkey "${CUE_KEY_FIX:-^F}"      _cue_fix_last
 
 autoload -Uz add-zsh-hook
+add-zsh-hook preexec _cue_preexec
 add-zsh-hook precmd _cue_precmd

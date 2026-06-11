@@ -53,7 +53,9 @@ class TestConfigShow:
         # Reload CONFIG_PATH by patching
         with patch("cue.config_io.CONFIG_PATH", tmp_path / "config.toml"), patch(
             "cue.config.CONFIG_PATH", tmp_path / "config.toml"
-        ), patch("cue.keys.CONFIG_PATH", tmp_path / "config.toml"):
+        ), patch("cue.keys.CONFIG_PATH", tmp_path / "config.toml"), patch(
+            "cue.keys.keyring_get", return_value=None
+        ):
             load_raw(tmp_path / "config.toml")
             text = format_config_show()
         assert "providers.primary" in text or "[providers.primary]" in text

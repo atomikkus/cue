@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -29,6 +30,32 @@ class TestExactCacheKey:
     def test_exact_cache_key_helper(self):
         assert exact_cache_key("foo", None) == "foo|"
         assert exact_cache_key("foo", "abc") == "foo|abc"
+
+    def test_legacy_exact_rows_are_unproven(self, tmp_path: Path):
+        db_path = tmp_path / "cache.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE exact_cache (
+                cache_key TEXT PRIMARY KEY,
+                query_norm TEXT NOT NULL,
+                command TEXT NOT NULL,
+                context_hash TEXT,
+                hits INTEGER DEFAULT 1,
+                created_at INTEGER,
+                last_used INTEGER
+            );
+            INSERT INTO exact_cache
+                (cache_key, query_norm, command, context_hash, created_at, last_used)
+            VALUES ('list files|', 'list files', 'ls -la', NULL, 1, 1);
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        store = Store(db_path)
+
+        assert store.exact_get("list files") is None
 
 
 class TestEmbeddingDimGuard:
