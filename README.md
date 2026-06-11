@@ -190,7 +190,7 @@ pytest
 ruff check cue tests
 ```
 
-See [`CLAUDE.md`](docs/CLAUDE.md) for architecture, design principles, and the implementation roadmap.
+See [`ARCH.md`](docs/ARCH.md) for architecture, design principles, and the implementation roadmap.
 
 ---
 

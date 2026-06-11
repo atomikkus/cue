@@ -1,4 +1,4 @@
-# CLAUDE.md — `cue`: An AI-Native Terminal Command Layer
+# ARCH.md — `cue`: An AI-Native Terminal Command Layer
 
 > A fast, token-frugal, provider-agnostic Ctrl+K for the terminal.
 > Type intent in plain language → the correct shell command appears in your buffer.
@@ -434,7 +434,7 @@ enabled = false             # local-only stats; opt-in
 ```
 cue/
 ├── docs/
-│   └── CLAUDE.md              # this file
+│   └── ARCH.md                # this file
 ├── README.md
 ├── pyproject.toml
 ├── install.sh                 # installs daemon, shell hooks, default config
