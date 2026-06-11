@@ -41,16 +41,18 @@ curl -fsSL https://raw.githubusercontent.com/atomikkus/cue/main/install.sh | bas
 
 Then **open a new terminal** and press **Ctrl+K**.
 
-Inline Ctrl+K works in **zsh** and **bash**. The installer uses **pipx** when available (isolated, no manual venv), then falls back to **uv** or a local venv.
+Inline Ctrl+K works in **zsh** and **bash**. On **Linux and WSL**, the installer bootstraps **uv** and installs into `~/.config/cue/venv` via a pre-built wheel (fast, visible progress). On **macOS**, it uses **pipx** when available, then falls back to uv or venv.
 
 <details>
 <summary><strong>Install from a clone</strong></summary>
 
 ```bash
-git clone https://github.com/atomikkus/cue.git
-cd cue
+git clone https://github.com/atomikkus/cue.git ~/cue
+cd ~/cue
 ./install.sh
 ```
+
+On **WSL**, clone inside Linux home (`~/cue`), not under `/mnt/c/...` — Windows drives make Python installs very slow.
 
 </details>
 
@@ -59,7 +61,7 @@ cd cue
 | Platform | What you need |
 |----------|----------------|
 | **macOS** | Python 3.11+ (`brew install python@3.11` if needed). zsh is usually already your login shell. |
-| **Debian/Ubuntu** | `sudo apt install python3 python3-venv python3-pip` |
+| **Debian/Ubuntu / WSL** | `sudo apt install python3 python3-venv python3-pip` — clone to `~/cue`, not `/mnt/c` |
 | **Fedora** | `sudo dnf install python3 python3-pip` |
 | **Arch** | `sudo pacman -S python python-pip` |
 
@@ -74,7 +76,8 @@ cue generate "list files here"  # smoke test from the terminal
 <summary><strong>Install options</strong></summary>
 
 ```bash
-./install.sh --method pipx                  # force pipx (default: auto)
+./install.sh --method venv                  # force venv (default on Linux: uv + venv)
+./install.sh --method pipx                  # force pipx (default on macOS)
 ./install.sh --shell bash                   # force bash hooks (default: auto from $SHELL)
 ./install.sh --no-daemon                    # hooks only; start daemon manually
 ./install.sh --uninstall                    # remove hooks and optionally ~/.config/cue

@@ -278,7 +278,14 @@ def _daemon_argv(
     return argv
 
 
-def _cmd_start(socket_path: Path, pid_path: Path, log_level: str, *, foreground: bool = False) -> None:
+def _cmd_start(
+    socket_path: Path,
+    pid_path: Path,
+    log_level: str,
+    *,
+    foreground: bool = False,
+    no_wait: bool = False,
+) -> None:
     """Start the daemon. Returns to the shell unless --foreground is set."""
     running = _is_running(pid_path)
     if running is not None:
@@ -296,6 +303,9 @@ def _cmd_start(socket_path: Path, pid_path: Path, log_level: str, *, foreground:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+    if no_wait:
+        return
 
     if _wait_for_socket(socket_path):
         ready_pid = _read_pid(pid_path)
@@ -356,13 +366,24 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Run in the foreground (for debugging; blocks the terminal)",
     )
+    ap.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="Return immediately after spawning the daemon (for shell startup hooks)",
+    )
     args = ap.parse_args(argv)
 
     socket_path = Path(args.socket).expanduser()
     pid_path = Path(args.pid).expanduser()
 
     if args.command == "start":
-        _cmd_start(socket_path, pid_path, args.log_level, foreground=args.foreground)
+        _cmd_start(
+            socket_path,
+            pid_path,
+            args.log_level,
+            foreground=args.foreground,
+            no_wait=args.no_wait,
+        )
     elif args.command == "stop":
         _cmd_stop(pid_path)
     elif args.command == "health":

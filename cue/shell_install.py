@@ -17,7 +17,7 @@ SUPPORTED_SHELLS = frozenset({"zsh", "bash"})
 CUE_PATH_LINE = 'export PATH="${HOME}/.config/cue/venv/bin:$PATH"'
 CUE_ZSH_HOOK = 'source "${HOME}/.config/cue/cue.zsh"'
 CUE_BASH_HOOK = 'source "${HOME}/.config/cue/cue.bash"'
-CUE_DAEMON_LAUNCH = "cue-daemon start &>/dev/null"
+CUE_DAEMON_LAUNCH = "(cue-daemon start --no-wait &>/dev/null &)"
 
 
 def detect_shell(explicit: str | None = None) -> str:

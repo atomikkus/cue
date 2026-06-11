@@ -21,7 +21,7 @@ CUE_VENV_DIR=""
 CUE_PATH_LINE=""
 CUE_ZSH_HOOK_LINE=""
 CUE_BASH_HOOK_LINE=""
-CUE_DAEMON_LAUNCH_LINE='cue-daemon start &>/dev/null'
+CUE_DAEMON_LAUNCH_LINE='(cue-daemon start --no-wait &>/dev/null &)'
 
 PYTHON="${PYTHON:-python3}"
 START_DAEMON=true
@@ -30,6 +30,7 @@ SHELL_CHOICE="auto"
 INSTALL_METHOD="${CUE_INSTALL_METHOD:-auto}"
 INSTALL_BACKEND=""
 SCRIPT_DIR=""
+PACKAGE_INSTALL_SEC=0
 
 # ---------------------------------------------------------------------------
 # Parse args
@@ -49,7 +50,7 @@ Usage: ./install.sh [options]
 Options:
   --python PATH           Python 3.11+ interpreter (default: python3)
   --shell auto|zsh|bash   Shell integration target (default: auto from $SHELL)
-  --method auto|pipx|uv|venv   Install backend (default: auto — pipx, then uv, then venv)
+  --method auto|pipx|uv|venv   Install backend (default: auto — Linux: uv+venv; macOS: pipx)
   --no-daemon             Skip daemon auto-start; install hooks only
   --uninstall             Remove cue hooks and optionally ~/.config/cue
   -h, --help              Show this help
@@ -70,6 +71,43 @@ warn() { echo "  ! $*"; }
 
 is_wsl() {
     [[ -f /proc/version ]] && grep -qiE 'microsoft|wsl' /proc/version
+}
+
+is_windows_mount() {
+    [[ "$1" == /mnt/* ]]
+}
+
+materialize_install_source() {
+    # pip/pipx on WSL hang for minutes (or forever) when the project lives on /mnt/c.
+    local source="$1"
+    if ! is_windows_mount "$source"; then
+        echo "$source"
+        return 0
+    fi
+
+    local dest
+    dest="$(mktemp -d "${TMPDIR:-/tmp}/cue-src.XXXXXX")"
+    warn "WSL: repo is on a Windows drive ($source)."
+    log "Copying source to Linux filesystem ($dest)..."
+    if command -v rsync &>/dev/null; then
+        rsync -a \
+            --exclude='.git' --exclude='.venv' --exclude='venv' \
+            --exclude='__pycache__' --exclude='.pytest_cache' \
+            "$source/" "$dest/"
+    else
+        tar -C "$source" \
+            --exclude='.git' --exclude='.venv' --exclude='venv' \
+            --exclude='__pycache__' --exclude='.pytest_cache' \
+            -cf - . 2>/dev/null | tar -xf - -C "$dest"
+    fi
+    if [[ ! -f "${dest}/pyproject.toml" ]]; then
+        rm -rf "$dest"
+        echo "Error: failed to copy install source off Windows mount." >&2
+        echo "  Clone inside Linux home instead:  git clone ${CUE_REPO_URL} ~/cue && cd ~/cue && ./install.sh" >&2
+        exit 1
+    fi
+    ok "Copied project to Linux FS."
+    echo "$dest"
 }
 
 resolve_config_dir() {
@@ -102,14 +140,89 @@ cue_path() {
     export PATH="${HOME}/.local/bin:${CUE_CONFIG_DIR}/venv/bin:${PATH}"
 }
 
+fetch_remote_source() {
+    local tmpdir archive extracted
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/cue-src.XXXXXX")"
+    archive="${tmpdir}/cue.zip"
+    echo "  [cue] Downloading cue source archive..." >&2
+    if command -v curl &>/dev/null; then
+        curl -fsSL "$CUE_ARCHIVE_URL" -o "$archive"
+    elif command -v wget &>/dev/null; then
+        wget -q -O "$archive" "$CUE_ARCHIVE_URL"
+    else
+        rm -rf "$tmpdir"
+        return 1
+    fi
+    if command -v unzip &>/dev/null; then
+        unzip -q "$archive" -d "$tmpdir"
+    elif "$PYTHON" -c "import zipfile" &>/dev/null; then
+        "$PYTHON" -m zipfile -e "$archive" "$tmpdir"
+    else
+        rm -rf "$tmpdir"
+        return 1
+    fi
+    extracted="$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d -name 'cue-*' 2>/dev/null | head -1)"
+    if [[ -z "$extracted" || ! -f "${extracted}/pyproject.toml" ]]; then
+        rm -rf "$tmpdir"
+        return 1
+    fi
+    echo "$extracted"
+}
+
 resolve_install_source() {
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || SCRIPT_DIR=""
     if [[ -n "$SCRIPT_DIR" && -f "${SCRIPT_DIR}/pyproject.toml" ]]; then
         echo "$SCRIPT_DIR"
-    elif command -v git &>/dev/null; then
+        return
+    fi
+    local remote=""
+    if remote="$(fetch_remote_source 2>/dev/null)"; then
+        echo "$remote"
+        return
+    fi
+    if command -v git &>/dev/null; then
+        warn "Archive download failed; falling back to git clone (slower)..."
         echo "git+${CUE_REPO_URL}"
-    else
-        echo "${CUE_ARCHIVE_URL}"
+        return
+    fi
+    echo "${CUE_ARCHIVE_URL}"
+}
+
+ensure_uv() {
+    if command -v uv &>/dev/null; then
+        return 0
+    fi
+    if ! command -v curl &>/dev/null; then
+        return 1
+    fi
+    log "Installing uv (fast Python package manager)..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="${HOME}/.local/bin:${PATH}"
+    command -v uv &>/dev/null
+}
+
+build_wheel() {
+    local source="$1" wheel_dir wheel
+    echo "  [cue] Building cue wheel..." >&2
+    wheel_dir="$(mktemp -d "${TMPDIR:-/tmp}/cue-wheel.XXXXXX")"
+    if ! uv build --wheel --out-dir "$wheel_dir" "$source"; then
+        rm -rf "$wheel_dir"
+        return 1
+    fi
+    wheel="$(find "$wheel_dir" -maxdepth 1 -name 'cue-*.whl' -print -quit)"
+    if [[ -z "$wheel" || ! -f "$wheel" ]]; then
+        rm -rf "$wheel_dir"
+        return 1
+    fi
+    echo "$wheel"
+}
+
+warn_mntc_clone() {
+    local dir
+    dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || dir=""
+    if [[ -n "$dir" ]] && is_windows_mount "$dir"; then
+        warn "Repo is on a Windows drive ($dir)."
+        warn "Recommended: git clone ${CUE_REPO_URL} ~/cue && cd ~/cue && ./install.sh"
     fi
 }
 
@@ -134,11 +247,25 @@ ensure_pipx() {
     command -v pipx &>/dev/null
 }
 
+linux_install_note() {
+    if [[ "$(detect_os)" != "linux" ]]; then
+        return 0
+    fi
+    warn "Linux/WSL: auto uses uv + venv (~45 MB wheels; onnxruntime ~17 MB + numpy)."
+    warn "Clone to Linux home (~/cue), not /mnt/c — Windows drives are very slow."
+    warn "Embedding model (~70 MB) downloads on first Ctrl+K, not during install."
+}
+
 install_with_pipx() {
     local source="$1"
+    if [[ "$(detect_os)" == "linux" ]] && is_windows_mount "$source"; then
+        echo "Error: pipx cannot install from a Windows mount ($source)." >&2
+        echo "  Clone to Linux home: git clone ${CUE_REPO_URL} ~/cue && cd ~/cue && ./install.sh" >&2
+        return 1
+    fi
     ensure_pipx || return 1
-    log "Installing cue with pipx..."
-    if ! pipx install --force "$source"; then
+    log "Installing cue with pipx (first install may take 1-3 min while deps download)..."
+    if ! pipx install --force --verbose "$source"; then
         return 1
     fi
     INSTALL_BACKEND="pipx"
@@ -148,10 +275,11 @@ install_with_pipx() {
 }
 
 install_with_uv() {
-    local source="$1"
-    command -v uv &>/dev/null || return 1
-    log "Installing cue with uv..."
-    if ! uv tool install --force "$source"; then
+    local source="$1" wheel
+    ensure_uv || return 1
+    wheel="$(build_wheel "$source")" || return 1
+    log "Installing cue with uv tool..."
+    if ! uv tool install --force "$wheel"; then
         return 1
     fi
     INSTALL_BACKEND="uv"
@@ -160,38 +288,78 @@ install_with_uv() {
     return 0
 }
 
+install_with_venv_uv() {
+    local source="$1" wheel py
+    ensure_uv || return 1
+    wheel="$(build_wheel "$source")" || return 1
+    py="$(venv_python)"
+    log "Creating virtual environment at ${CUE_VENV_DIR}..."
+    if [[ -x "$py" ]] && ! venv_has_pip; then
+        warn "Removing broken venv (pip missing or unusable)..."
+        rm -rf "$CUE_VENV_DIR"
+        py=""
+    fi
+    if [[ ! -x "$(venv_python)" ]]; then
+        if ! uv venv "$CUE_VENV_DIR" -p "$PYTHON"; then
+            return 1
+        fi
+    fi
+    py="$(venv_python)"
+    log "Installing deps (~45 MB wheels) — progress below..."
+    if ! uv pip install --python "$py" "$wheel"; then
+        return 1
+    fi
+    INSTALL_BACKEND="venv"
+    set_hook_lines_for_backend
+    ok "cue installed in ${CUE_VENV_DIR}."
+    return 0
+}
+
 install_with_venv() {
     local source="$1"
     create_venv
-    local py
+    local py pip_quiet=("--quiet")
     py="$(venv_python)"
-    log "Installing cue into venv..."
-    "$py" -m pip install --quiet --upgrade pip
-    "$py" -m pip install --quiet "$source"
+    log "Installing cue into venv (pip fallback)..."
+    if [[ "$(detect_os)" == "linux" ]]; then
+        pip_quiet=()
+        log "Downloading deps (~45 MB wheels) — progress below..."
+    fi
+    "$py" -m pip install "${pip_quiet[@]}" --upgrade pip
+    "$py" -m pip install "${pip_quiet[@]}" --progress-bar on "$source"
     INSTALL_BACKEND="venv"
     set_hook_lines_for_backend
     ok "cue installed in ${CUE_VENV_DIR}."
 }
 
 install_cue_package() {
-    local source method
+    local source method t_start
+    t_start=$SECONDS
     source="$(resolve_install_source)"
+    source="$(materialize_install_source "$source")"
     method="$INSTALL_METHOD"
 
     case "$method" in
         pipx) install_with_pipx "$source" ;;
-        uv)   install_with_uv "$source" || install_with_venv "$source" ;;
-        venv) install_with_venv "$source" ;;
+        uv)   install_with_uv "$source" || install_with_venv_uv "$source" || install_with_venv "$source" ;;
+        venv) install_with_venv_uv "$source" || install_with_venv "$source" ;;
         auto)
-            install_with_pipx "$source" \
-                || install_with_uv "$source" \
-                || install_with_venv "$source"
+            if [[ "$(detect_os)" == "linux" ]]; then
+                log "Linux detected — using uv + venv wheel install..."
+                install_with_venv_uv "$source" || install_with_venv "$source"
+            else
+                install_with_pipx "$source" \
+                    || install_with_venv_uv "$source" \
+                    || install_with_venv "$source"
+            fi
             ;;
         *)
             echo "Error: --method must be auto, pipx, uv, or venv (got: $method)" >&2
             exit 1
             ;;
     esac
+    PACKAGE_INSTALL_SEC=$((SECONDS - t_start))
+    ok "Package install completed in ${PACKAGE_INSTALL_SEC}s"
 }
 
 cue_python() {
@@ -446,6 +614,8 @@ install_profile_hooks() {
     upgrade_profile_line '(ctrlk-daemon start &>/dev/null &)' "$CUE_DAEMON_LAUNCH_LINE" "$profile"
     upgrade_profile_line 'ctrlk-daemon start &>/dev/null' "$CUE_DAEMON_LAUNCH_LINE" "$profile"
     upgrade_profile_line '(cue-daemon start &>/dev/null &)' "$CUE_DAEMON_LAUNCH_LINE" "$profile"
+    upgrade_profile_line 'cue-daemon start &>/dev/null' "$CUE_DAEMON_LAUNCH_LINE" "$profile"
+    upgrade_profile_line '(cue-daemon start --no-wait &>/dev/null &)' "$CUE_DAEMON_LAUNCH_LINE" "$profile"
 
     if add_line_if_missing "$CUE_PATH_LINE" "$profile"; then
         ok "Added cue venv to PATH in $profile"
@@ -540,6 +710,8 @@ echo "Installing cue v${CUE_VERSION}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ok "OS: ${OS} (${DISTRO})"
 ok "Shell integration: ${TARGET_SHELL}"
+warn_mntc_clone
+linux_install_note
 
 require_python
 
@@ -576,7 +748,7 @@ else
 fi
 
 if [[ "$START_DAEMON" == "true" ]]; then
-    log "Starting cue daemon..."
+    log "Starting cue daemon (first start may take a few seconds)..."
     cue_path
     if command -v cue-daemon &>/dev/null; then
         cue-daemon stop 2>/dev/null || true
