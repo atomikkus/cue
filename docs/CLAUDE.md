@@ -433,7 +433,8 @@ enabled = false             # local-only stats; opt-in
 
 ```
 cue/
-├── CLAUDE.md                  # this file
+├── docs/
+│   └── CLAUDE.md              # this file
 ├── README.md
 ├── pyproject.toml
 ├── install.sh                 # installs daemon, shell hooks, default config

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="cue_vaporwave_transparent.png" alt="Cue" width="280">
+  <img src="docs/cue_vaporwave_transparent.png" alt="Cue" width="280">
 </p>
 
 <h1 align="center">Cue</h1>
@@ -190,7 +190,7 @@ pytest
 ruff check cue tests
 ```
 
-See [`CLAUDE.md`](CLAUDE.md) for architecture, design principles, and the implementation roadmap.
+See [`CLAUDE.md`](docs/CLAUDE.md) for architecture, design principles, and the implementation roadmap.
 
 ---
 
