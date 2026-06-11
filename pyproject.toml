@@ -35,6 +35,7 @@ packages = ["cue"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "cue/shell/cue.zsh" = "cue/shell/cue.zsh"
+"cue/shell/cue.bash" = "cue/shell/cue.bash"
 
 [tool.ruff]
 line-length = 100

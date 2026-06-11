@@ -155,7 +155,7 @@ class Router:
         from cue.history import ingest_history  # noqa: PLC0415
 
         force = bool(request.get("force", False))
-        source = request.get("source", "zsh")
+        source = request.get("source", "auto")
         try:
             count = ingest_history(
                 self.store,

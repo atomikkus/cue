@@ -87,7 +87,7 @@ def _build_router():
     # Background history ingestion (non-blocking)
     def _bg_ingest():
         try:
-            ingest_history(store, emb_mod.embed_batch, cfg.embeddings.model)
+            ingest_history(store, emb_mod.embed_batch, cfg.embeddings.model, source="auto")
         except Exception as exc:
             log.warning("Background history ingestion failed: %s", exc)
 

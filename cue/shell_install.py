@@ -1,8 +1,9 @@
-"""Install and verify the bundled zsh widget."""
+"""Install and verify zsh/bash shell widgets."""
 
 from __future__ import annotations
 
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -10,45 +11,103 @@ from importlib import resources
 from pathlib import Path
 
 from cue.config import CONFIG_DIR
+from cue.keys import key_status
+
+SUPPORTED_SHELLS = frozenset({"zsh", "bash"})
+CUE_PATH_LINE = 'export PATH="${HOME}/.config/cue/venv/bin:$PATH"'
+CUE_ZSH_HOOK = 'source "${HOME}/.config/cue/cue.zsh"'
+CUE_BASH_HOOK = 'source "${HOME}/.config/cue/cue.bash"'
+CUE_DAEMON_LAUNCH = "cue-daemon start &>/dev/null"
 
 
-def install_shell_widget(target_dir: Path | None = None) -> Path:
-    """Copy the packaged cue.zsh widget into the config directory."""
-    dest_dir = (target_dir or CONFIG_DIR).expanduser()
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / "cue.zsh"
-
-    with resources.files("cue.shell").joinpath("cue.zsh").open("rb") as src:
-        with dest.open("wb") as out:
-            shutil.copyfileobj(src, out)
-
-    return dest
+def detect_shell(explicit: str | None = None) -> str:
+    """Return zsh, bash, or other."""
+    if explicit and explicit != "auto":
+        return explicit.lower()
+    shell_path = os.environ.get("SHELL", "")
+    name = Path(shell_path).name.lower() if shell_path else ""
+    if name in SUPPORTED_SHELLS:
+        return name
+    return "other"
 
 
-def _zshrc_path() -> Path:
+def zshrc_path() -> Path:
     zdotdir = os.environ.get("ZDOTDIR", "").strip()
     if zdotdir:
         return Path(zdotdir).expanduser() / ".zshrc"
     return Path.home() / ".zshrc"
 
 
-def zshrc_has_hooks() -> bool:
-    zshrc = _zshrc_path()
-    if not zshrc.is_file():
+def bashrc_path() -> Path:
+    bash_env = os.environ.get("BASH_ENV", "").strip()
+    if bash_env and Path(bash_env).expanduser().is_file():
+        return Path(bash_env).expanduser()
+    return Path.home() / ".bashrc"
+
+
+def profile_path(shell: str) -> Path:
+    if shell == "zsh":
+        return zshrc_path()
+    if shell == "bash":
+        return bashrc_path()
+    raise ValueError(f"Unsupported shell: {shell}")
+
+
+def profile_hook_line(shell: str) -> str:
+    if shell == "zsh":
+        return CUE_ZSH_HOOK
+    if shell == "bash":
+        return CUE_BASH_HOOK
+    raise ValueError(f"Unsupported shell: {shell}")
+
+
+def widget_filename(shell: str) -> str:
+    return f"cue.{shell}"
+
+
+def install_shell_widget(shell: str | None = None, target_dir: Path | None = None) -> Path:
+    """Copy the packaged shell widget into the config directory."""
+    shell_name = shell or detect_shell()
+    if shell_name not in SUPPORTED_SHELLS:
+        raise ValueError(f"Unsupported shell for widget install: {shell_name}")
+
+    dest_dir = (target_dir or CONFIG_DIR).expanduser()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / widget_filename(shell_name)
+
+    with resources.files("cue.shell").joinpath(widget_filename(shell_name)).open("rb") as src:
+        with dest.open("wb") as out:
+            shutil.copyfileobj(src, out)
+
+    return dest
+
+
+def profile_has_hooks(shell: str) -> bool:
+    path = profile_path(shell)
+    if not path.is_file():
         return False
-    text = zshrc.read_text(encoding="utf-8", errors="replace")
-    return 'source "${HOME}/.config/cue/cue.zsh"' in text
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return profile_hook_line(shell) in text
+
+
+def _any_key_configured() -> bool:
+    for provider in ("openrouter", "anthropic", "openai", "mistral", "custom"):
+        if key_status(provider)[0] != "none":
+            return True
+    return False
 
 
 def run_doctor() -> int:
     """Print install health checks. Returns 0 if all critical checks pass."""
     ok = True
-    venv_bin = CONFIG_DIR / "venv" / "bin"
-    widget = CONFIG_DIR / "cue.zsh"
+    shell = detect_shell()
+    system = platform.system().lower()
+    widget = CONFIG_DIR / widget_filename(shell) if shell in SUPPORTED_SHELLS else None
     socket = Path(os.environ.get("CUE_SOCKET", str(CONFIG_DIR / "daemon.sock"))).expanduser()
 
     print("cue doctor")
     print("─" * 40)
+    print(f"  OS: {system}   shell: {shell}")
 
     def check(label: str, passed: bool, detail: str, *, critical: bool = True) -> None:
         nonlocal ok
@@ -59,8 +118,18 @@ def run_doctor() -> int:
 
     check("Python package", shutil.which("cue") is not None, shutil.which("cue") or "not on PATH")
     check("Daemon binary", shutil.which("cue-daemon") is not None, shutil.which("cue-daemon") or "not on PATH")
-    check("Shell widget", widget.is_file(), str(widget))
-    check("~/.zshrc hooks", zshrc_has_hooks(), str(_zshrc_path()))
+
+    if shell in SUPPORTED_SHELLS:
+        assert widget is not None
+        check("Shell widget", widget.is_file(), str(widget))
+        check(f"{profile_path(shell).name} hooks", profile_has_hooks(shell), str(profile_path(shell)))
+    else:
+        check(
+            "Inline shell integration",
+            False,
+            f"unsupported shell '{shell}' — use zsh/bash or `cue generate`",
+            critical=False,
+        )
 
     if shutil.which("cue-daemon"):
         try:
@@ -82,43 +151,68 @@ def run_doctor() -> int:
 
     check("Unix socket", socket.exists(), str(socket), critical=False)
 
-    if widget.is_file():
+    if shell == "zsh" and widget and widget.is_file():
         text = widget.read_text(encoding="utf-8", errors="replace")
         has_fix = "_cue_read_line" in text and "read -k 1 char" in text
-        check("Widget input fix", has_fix, "read -k ZLE input present" if has_fix else "outdated widget — run: cue install-shell")
-
-    bind_check = subprocess.run(
-        ["zsh", "-lic", 'source "${HOME}/.config/cue/cue.zsh" 2>/dev/null; bindkey | grep _cue_generate'],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
-    binding = bind_check.stdout.strip() or "not bound"
-    check("Ctrl+K binding", "^K" in binding and "_cue_generate" in binding, binding, critical=False)
-
-    has_key = any(
-        os.environ.get(name)
-        for name in (
-            "OPENROUTER_API_KEY",
-            "CUE_OPENROUTER_API_KEY",
-            "ANTHROPIC_API_KEY",
-            "CUE_ANTHROPIC_API_KEY",
-            "OPENAI_API_KEY",
-            "CUE_OPENAI_API_KEY",
+        check(
+            "Widget input fix",
+            has_fix,
+            "read -k ZLE input present" if has_fix else "outdated widget — run: cue install-shell",
+            critical=False,
         )
-    )
+        if shutil.which("zsh"):
+            bind_check = subprocess.run(
+                ["zsh", "-lic", 'source "${HOME}/.config/cue/cue.zsh" 2>/dev/null; bindkey | grep _cue_generate'],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            binding = bind_check.stdout.strip() or "not bound"
+            check("Ctrl+K binding", "^K" in binding and "_cue_generate" in binding, binding, critical=False)
+        else:
+            check("zsh binary", False, "not found — install zsh for inline Ctrl+K", critical=False)
+
+    if shell == "bash" and widget and widget.is_file():
+        text = widget.read_text(encoding="utf-8", errors="replace")
+        has_readline = "_cue_generate" in text and "READLINE_LINE" in text
+        check(
+            "Bash Readline widget",
+            has_readline,
+            "READLINE_LINE integration present" if has_readline else "outdated widget — run: cue install-shell",
+            critical=False,
+        )
+        if shutil.which("bash"):
+            bind_check = subprocess.run(
+                ["bash", "-lic", 'source "${HOME}/.config/cue/cue.bash" 2>/dev/null; bind -p | grep _cue_generate'],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            binding = bind_check.stdout.strip() or "not bound"
+            check("Ctrl+K binding", "_cue_generate" in binding, binding, critical=False)
+        else:
+            check("bash binary", False, "not found", critical=False)
+
     check(
-        "API key in shell env",
-        has_key,
-        "set in this shell (daemon needs key at startup — add to ~/.zshrc)",
+        "API key configured",
+        _any_key_configured(),
+        "set via `cue setup` or `cue key set <provider>`",
         critical=False,
     )
 
     print("─" * 40)
     if ok:
         print("  All critical checks passed.")
-        print("  Press Ctrl+K at a zsh prompt (rebind if Cursor steals ^K).")
+        if shell in SUPPORTED_SHELLS:
+            tip = "rebind if your terminal steals ^K: export CUE_KEY_GENERATE='^X^K'"
+            if system == "darwin":
+                print(f"  Press Ctrl+K at a {shell} prompt ({tip}).")
+            else:
+                print(f"  Press Ctrl+K at a {shell} prompt ({tip}).")
+        else:
+            print("  Use `cue generate \"your intent\"` from this shell.")
         return 0
 
     print("  Some checks failed. Run: ./install.sh  or  cue install-shell")
@@ -130,6 +224,16 @@ def main(argv: list[str] | None = None) -> None:
     if args and args[0] == "doctor":
         sys.exit(run_doctor())
 
-    dest = install_shell_widget()
+    shell = detect_shell(args[0] if args else None)
+    if shell not in SUPPORTED_SHELLS:
+        print(f"Unsupported shell: {shell}. Use zsh or bash.", file=sys.stderr)
+        sys.exit(1)
+
+    dest = install_shell_widget(shell)
     print(f"Installed shell widget: {dest}")
-    print("Reload your shell:  source ~/.zshrc")
+    profile = profile_path(shell)
+    print(f"Reload your shell:  source {profile}")
+
+
+if __name__ == "__main__":
+    main()

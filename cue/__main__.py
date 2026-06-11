@@ -12,7 +12,7 @@ Usage:
   cue config set ...  -- update a config value
   cue key list        -- list API key sources per provider
   cue key set ...     -- store API key in OS keychain
-  cue install-shell   -- install/update the zsh widget from the package
+  cue install-shell   -- install/update the zsh or bash widget from the package
   cue doctor          -- verify install, daemon, and keybindings
 """
 
@@ -179,10 +179,17 @@ def main(argv: list[str] | None = None) -> None:
         from cue.cli_setup import main_key  # noqa: PLC0415
         sys.exit(main_key(args[1:]))
     elif cmd == "install-shell":
-        from cue.shell_install import install_shell_widget  # noqa: PLC0415
-        dest = install_shell_widget()
+        from cue.shell_install import detect_shell, install_shell_widget, profile_path  # noqa: PLC0415
+        shell = detect_shell()
+        if shell not in {"zsh", "bash"}:
+            print(
+                f"Unsupported shell: {shell}. Use zsh/bash or pass via SHELL env.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        dest = install_shell_widget(shell)
         print(f"Installed shell widget: {dest}")
-        print("Reload your shell:  source ~/.zshrc")
+        print(f"Reload your shell:  source {profile_path(shell)}")
     elif cmd == "doctor":
         from cue.shell_install import run_doctor  # noqa: PLC0415
         sys.exit(run_doctor())

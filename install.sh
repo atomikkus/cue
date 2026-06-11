@@ -2,24 +2,27 @@
 # install.sh — Install cue: daemon, shell hooks, default config
 #
 # Usage:
-#   ./install.sh              # default install (Python from PATH)
-#   ./install.sh --python /usr/local/bin/python3.11
-#   ./install.sh --no-daemon  # install shell hooks only, start daemon manually
-#   ./install.sh --uninstall  # remove everything
+#   ./install.sh                      # default install (Python from PATH)
+#   ./install.sh --python /usr/bin/python3.11
+#   ./install.sh --shell bash|zsh|auto
+#   ./install.sh --no-daemon          # install shell hooks only, start daemon manually
+#   ./install.sh --uninstall          # remove everything
 
 set -euo pipefail
 
 CUE_VERSION="0.1.0"
 CUE_CONFIG_DIR="${CUE_CONFIG_DIR:-${HOME}/.config/cue}"
+export CUE_CONFIG_DIR
 CUE_VENV_DIR="${CUE_CONFIG_DIR}/venv"
 CUE_PATH_LINE='export PATH="${HOME}/.config/cue/venv/bin:$PATH"'
 CUE_ZSH_HOOK_LINE='source "${HOME}/.config/cue/cue.zsh"'
+CUE_BASH_HOOK_LINE='source "${HOME}/.config/cue/cue.bash"'
 CUE_DAEMON_LAUNCH_LINE='cue-daemon start &>/dev/null'
-ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
 
 PYTHON="${PYTHON:-python3}"
 START_DAEMON=true
 UNINSTALL=false
+SHELL_CHOICE="auto"
 
 # ---------------------------------------------------------------------------
 # Parse args
@@ -28,10 +31,20 @@ UNINSTALL=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --python)     PYTHON="$2"; shift 2 ;;
+        --shell)      SHELL_CHOICE="$2"; shift 2 ;;
         --no-daemon)  START_DAEMON=false; shift ;;
         --uninstall)  UNINSTALL=true; shift ;;
         -h|--help)
-            echo "Usage: $0 [--python PATH] [--no-daemon] [--uninstall]"
+            cat <<'EOF'
+Usage: ./install.sh [options]
+
+Options:
+  --python PATH     Python 3.11+ interpreter (default: python3)
+  --shell auto|zsh|bash   Shell integration target (default: auto from $SHELL)
+  --no-daemon       Skip daemon auto-start; install hooks only
+  --uninstall       Remove cue hooks and optionally ~/.config/cue
+  -h, --help        Show this help
+EOF
             exit 0
             ;;
         *)  echo "Unknown option: $1"; exit 1 ;;
@@ -46,18 +59,124 @@ log()  { echo "  [cue] $*"; }
 ok()   { echo "  ✓ $*"; }
 warn() { echo "  ! $*"; }
 
+detect_os() {
+    case "$(uname -s)" in
+        Darwin) echo "darwin" ;;
+        Linux)  echo "linux" ;;
+        *)      echo "unknown" ;;
+    esac
+}
+
+detect_distro_id() {
+    if [[ -f /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        echo "${ID:-unknown}"
+        return
+    fi
+    echo "unknown"
+}
+
+python_venv_hint() {
+    local os="$1" distro="$2"
+    if [[ "$os" == "darwin" ]]; then
+        echo "Install Python 3.11+ via Homebrew:  brew install python@3.11"
+        return
+    fi
+    case "$distro" in
+        ubuntu|debian|pop|linuxmint)
+            echo "sudo apt install python3 python3-venv python3-pip"
+            ;;
+        fedora|rhel|centos|rocky|almalinux)
+            echo "sudo dnf install python3 python3-pip"
+            ;;
+        arch|manjaro)
+            echo "sudo pacman -S python python-pip"
+            ;;
+        *)
+            echo "Install Python 3.11+ and the python3-venv package for your distro."
+            ;;
+    esac
+}
+
+detect_target_shell() {
+    case "$SHELL_CHOICE" in
+        auto)
+            local name
+            name="$(basename "${SHELL:-}")"
+            case "$name" in
+                zsh|bash) echo "$name" ;;
+                *) echo "other" ;;
+            esac
+            ;;
+        zsh|bash) echo "$SHELL_CHOICE" ;;
+        *)
+            echo "Error: --shell must be auto, zsh, or bash (got: $SHELL_CHOICE)" >&2
+            exit 1
+            ;;
+    esac
+}
+
+profile_for_shell() {
+    case "$1" in
+        zsh)
+            echo "${ZDOTDIR:-$HOME}/.zshrc"
+            ;;
+        bash)
+            if [[ -n "${BASH_ENV:-}" && -f "${BASH_ENV}" ]]; then
+                echo "$BASH_ENV"
+            else
+                echo "${HOME}/.bashrc"
+            fi
+            ;;
+    esac
+}
+
+hook_line_for_shell() {
+    case "$1" in
+        zsh) echo "$CUE_ZSH_HOOK_LINE" ;;
+        bash) echo "$CUE_BASH_HOOK_LINE" ;;
+    esac
+}
+
 require_python() {
+    local os distro
+    os="$(detect_os)"
+    distro="$(detect_distro_id)"
+
     if ! command -v "$PYTHON" &>/dev/null; then
-        echo "Error: Python not found at '$PYTHON'. Install Python 3.11+ first."
+        echo "Error: Python not found at '$PYTHON'."
+        echo "  $(python_venv_hint "$os" "$distro")"
         exit 1
     fi
     local ver
     ver=$("$PYTHON" -c "import sys; print(sys.version_info >= (3,11))")
     if [[ "$ver" != "True" ]]; then
         echo "Error: Python 3.11+ required. Found: $("$PYTHON" --version)"
+        echo "  $(python_venv_hint "$os" "$distro")"
         exit 1
     fi
     ok "Python: $("$PYTHON" --version)"
+}
+
+create_venv() {
+    local os distro
+    os="$(detect_os)"
+    distro="$(detect_distro_id)"
+
+    log "Creating virtual environment at ${CUE_VENV_DIR}..."
+    if [[ ! -x "${CUE_VENV_DIR}/bin/python" ]]; then
+        if ! "$PYTHON" -m venv "$CUE_VENV_DIR" 2>/dev/null; then
+            echo "Error: failed to create virtual environment."
+            if [[ "$os" == "linux" && "$distro" =~ ^(ubuntu|debian|pop|linuxmint)$ ]]; then
+                echo "  On Debian/Ubuntu, install: sudo apt install python3-venv"
+            else
+                echo "  $(python_venv_hint "$os" "$distro")"
+            fi
+            exit 1
+        fi
+    fi
+    ok "Virtual environment ready."
 }
 
 daemon_bin() {
@@ -68,6 +187,90 @@ daemon_bin() {
     fi
 }
 
+add_line_if_missing() {
+    local line="$1"
+    local file="$2"
+    if ! grep -qF "$line" "$file" 2>/dev/null; then
+        echo "" >> "$file"
+        echo "# cue" >> "$file"
+        echo "$line" >> "$file"
+        return 0
+    fi
+    return 1
+}
+
+upgrade_profile_line() {
+    local old="$1" new="$2" file="$3"
+    if [[ -f "$file" ]] && grep -qF "$old" "$file" 2>/dev/null; then
+        local tmp
+        tmp=$(mktemp)
+        sed "s|$(printf '%s' "$old" | sed 's/[&/\]/\\&/g')|$(printf '%s' "$new" | sed 's/[&/\]/\\&/g')|g" "$file" > "$tmp"
+        mv "$tmp" "$file"
+        ok "Updated stale hook in $file"
+    fi
+}
+
+install_profile_hooks() {
+    local shell_name="$1"
+    local profile hook_line widget_file
+    profile="$(profile_for_shell "$shell_name")"
+    hook_line="$(hook_line_for_shell "$shell_name")"
+    widget_file="${CUE_CONFIG_DIR}/cue.${shell_name}"
+
+    if [[ ! -f "$profile" && ! -e "$profile" ]]; then
+        touch "$profile"
+    fi
+
+    if [[ ! -f "$profile" ]]; then
+        warn "$profile is not a regular file. Add these lines manually:"
+        echo "    $CUE_PATH_LINE"
+        echo "    $hook_line"
+        [[ "$START_DAEMON" == "true" ]] && echo "    $CUE_DAEMON_LAUNCH_LINE"
+        return
+    fi
+
+    upgrade_profile_line 'export PATH="${HOME}/.config/ctrlk/venv/bin:$PATH"' "$CUE_PATH_LINE" "$profile"
+    upgrade_profile_line 'source "${HOME}/.config/ctrlk/ctrlk.zsh"' "$CUE_ZSH_HOOK_LINE" "$profile"
+    upgrade_profile_line '(ctrlk-daemon start &>/dev/null &)' "$CUE_DAEMON_LAUNCH_LINE" "$profile"
+    upgrade_profile_line 'ctrlk-daemon start &>/dev/null' "$CUE_DAEMON_LAUNCH_LINE" "$profile"
+    upgrade_profile_line '(cue-daemon start &>/dev/null &)' "$CUE_DAEMON_LAUNCH_LINE" "$profile"
+
+    if add_line_if_missing "$CUE_PATH_LINE" "$profile"; then
+        ok "Added cue venv to PATH in $profile"
+    else
+        ok "cue PATH already in $profile"
+    fi
+
+    if [[ -f "$widget_file" ]]; then
+        if add_line_if_missing "$hook_line" "$profile"; then
+            ok "Added ${shell_name} shell hook to $profile"
+        else
+            ok "${shell_name} shell hook already in $profile"
+        fi
+    else
+        warn "Widget missing at $widget_file — run: cue install-shell"
+    fi
+
+    if [[ "$START_DAEMON" == "true" ]]; then
+        if add_line_if_missing "$CUE_DAEMON_LAUNCH_LINE" "$profile"; then
+            ok "Added daemon auto-start to $profile"
+        else
+            ok "Daemon auto-start already in $profile"
+        fi
+    fi
+}
+
+remove_cue_lines_from_file() {
+    local file="$1"
+    if [[ -f "$file" ]]; then
+        local tmp
+        tmp=$(mktemp)
+        grep -v "cue" "$file" > "$tmp" || true
+        mv "$tmp" "$file"
+        ok "Removed cue lines from $file"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
@@ -75,21 +278,17 @@ daemon_bin() {
 if [[ "$UNINSTALL" == "true" ]]; then
     log "Uninstalling cue..."
 
-    # Stop daemon (prefer venv binary from a prior install)
     local_daemon="$(daemon_bin || true)"
     if [[ -n "$local_daemon" ]]; then
         "$local_daemon" stop 2>/dev/null || true
     fi
 
-    # Remove shell hook lines from .zshrc
-    if [[ -f "$ZSHRC" ]]; then
-        tmp=$(mktemp)
-        grep -v "cue" "$ZSHRC" > "$tmp" || true
-        mv "$tmp" "$ZSHRC"
-        ok "Removed cue lines from $ZSHRC"
+    remove_cue_lines_from_file "${ZDOTDIR:-$HOME}/.zshrc"
+    remove_cue_lines_from_file "${HOME}/.bashrc"
+    if [[ -n "${BASH_ENV:-}" && -f "${BASH_ENV}" ]]; then
+        remove_cue_lines_from_file "$BASH_ENV"
     fi
 
-    # Remove config dir (ask first)
     if [[ -d "$CUE_CONFIG_DIR" ]]; then
         read -r -p "  Remove $CUE_CONFIG_DIR (venv, cache, config, history index)? [y/N] " confirm
         if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
@@ -106,33 +305,32 @@ fi
 # Install
 # ---------------------------------------------------------------------------
 
+OS="$(detect_os)"
+DISTRO="$(detect_distro_id)"
+TARGET_SHELL="$(detect_target_shell)"
+
 echo ""
 echo "Installing cue v${CUE_VERSION}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+ok "OS: ${OS} (${DISTRO})"
+ok "Shell integration: ${TARGET_SHELL}"
 
 require_python
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# 1. Create config directory
 mkdir -p "$CUE_CONFIG_DIR"
 ok "Config dir: $CUE_CONFIG_DIR"
 
-# 2. Install into an isolated venv (avoids PEP 668 on Homebrew/system Python)
-log "Creating virtual environment at ${CUE_VENV_DIR}..."
-if [[ ! -x "${CUE_VENV_DIR}/bin/python" ]]; then
-    "$PYTHON" -m venv "$CUE_VENV_DIR"
-fi
+create_venv
 VENV_PYTHON="${CUE_VENV_DIR}/bin/python"
 VENV_PIP="${CUE_VENV_DIR}/bin/pip"
-ok "Virtual environment ready."
 
 log "Installing cue Python package..."
 "$VENV_PIP" install --quiet --upgrade pip
 "$VENV_PIP" install --quiet "$SCRIPT_DIR"
 ok "cue package installed in venv."
 
-# 3. Write default config (if not exists)
 if [[ ! -f "${CUE_CONFIG_DIR}/config.toml" ]]; then
     "$VENV_PYTHON" -c "from cue.config import load; load()" 2>/dev/null || true
     ok "Default config written to ${CUE_CONFIG_DIR}/config.toml"
@@ -140,67 +338,32 @@ else
     ok "Config already exists, skipping."
 fi
 
-# 4. Install shell widget from the Python package (always matches installed version)
-log "Installing zsh widget..."
-"$VENV_PYTHON" -m cue.shell_install
-ok "Shell widget installed to ${CUE_CONFIG_DIR}/cue.zsh"
-
-# 5. Add to .zshrc if not already present
-add_line_if_missing() {
-    local line="$1"
-    local file="$2"
-    if ! grep -qF "$line" "$file" 2>/dev/null; then
-        echo "" >> "$file"
-        echo "# cue" >> "$file"
-        echo "$line" >> "$file"
-        return 0
+if [[ "$TARGET_SHELL" == "zsh" || "$TARGET_SHELL" == "bash" ]]; then
+    log "Installing ${TARGET_SHELL} widget..."
+    if ! "$VENV_PYTHON" -m cue.shell_install "$TARGET_SHELL"; then
+        echo "Error: failed to install ${TARGET_SHELL} widget." >&2
+        exit 1
     fi
-    return 1
-}
-
-upgrade_zshrc_line() {
-    local old="$1" new="$2" file="$3"
-    if [[ -f "$file" ]] && grep -qF "$old" "$file" 2>/dev/null; then
-        tmp=$(mktemp)
-        sed "s|$(printf '%s' "$old" | sed 's/[&/\]/\\&/g')|$(printf '%s' "$new" | sed 's/[&/\]/\\&/g')|g" "$file" > "$tmp"
-        mv "$tmp" "$file"
-        ok "Updated stale hook in $file"
-    fi
-}
-
-if [[ -f "$ZSHRC" || ! -e "$ZSHRC" ]]; then
-    touch "$ZSHRC"
-    # Upgrade older installs (ctrlk rename, pip --user, background-only daemon start)
-    upgrade_zshrc_line 'export PATH="${HOME}/.config/ctrlk/venv/bin:$PATH"' "$CUE_PATH_LINE" "$ZSHRC"
-    upgrade_zshrc_line 'source "${HOME}/.config/ctrlk/ctrlk.zsh"' "$CUE_ZSH_HOOK_LINE" "$ZSHRC"
-    upgrade_zshrc_line '(ctrlk-daemon start &>/dev/null &)' "$CUE_DAEMON_LAUNCH_LINE" "$ZSHRC"
-    upgrade_zshrc_line 'ctrlk-daemon start &>/dev/null' "$CUE_DAEMON_LAUNCH_LINE" "$ZSHRC"
-    upgrade_zshrc_line '(cue-daemon start &>/dev/null &)' "$CUE_DAEMON_LAUNCH_LINE" "$ZSHRC"
-    if add_line_if_missing "$CUE_PATH_LINE" "$ZSHRC"; then
-        ok "Added cue venv to PATH in $ZSHRC"
+    widget_path="${CUE_CONFIG_DIR}/cue.${TARGET_SHELL}"
+    if [[ -f "$widget_path" ]]; then
+        ok "Shell widget installed to ${widget_path}"
     else
-        ok "cue PATH already in $ZSHRC"
+        echo "Error: widget not found at ${widget_path} after install." >&2
+        exit 1
     fi
-    if add_line_if_missing "$CUE_ZSH_HOOK_LINE" "$ZSHRC"; then
-        ok "Added shell hook to $ZSHRC"
-    else
-        ok "Shell hook already in $ZSHRC"
-    fi
-    if [[ "$START_DAEMON" == "true" ]]; then
-        if add_line_if_missing "$CUE_DAEMON_LAUNCH_LINE" "$ZSHRC"; then
-            ok "Added daemon auto-start to $ZSHRC"
-        else
-            ok "Daemon auto-start already in $ZSHRC"
+    install_profile_hooks "$TARGET_SHELL"
+else
+    warn "Unsupported shell '${SHELL:-unknown}' — installed CLI only (no inline Ctrl+K)."
+    warn "Use zsh or bash for inline integration, or run: cue generate \"your intent\""
+    profile="${ZDOTDIR:-$HOME}/.zshrc"
+    if [[ -f "$profile" || ! -e "$profile" ]]; then
+        touch "$profile"
+        if add_line_if_missing "$CUE_PATH_LINE" "$profile"; then
+            ok "Added cue venv to PATH in $profile"
         fi
     fi
-else
-    warn "$ZSHRC is not a regular file. Add these lines manually:"
-    echo "    $CUE_PATH_LINE"
-    echo "    $CUE_ZSH_HOOK_LINE"
-    [[ "$START_DAEMON" == "true" ]] && echo "    $CUE_DAEMON_LAUNCH_LINE"
 fi
 
-# 6. Start the daemon now
 if [[ "$START_DAEMON" == "true" ]]; then
     log "Starting cue daemon..."
     DAEMON_BIN="$(daemon_bin || true)"
@@ -218,10 +381,6 @@ if [[ "$START_DAEMON" == "true" ]]; then
     fi
 fi
 
-# ---------------------------------------------------------------------------
-# Done
-# ---------------------------------------------------------------------------
-
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  cue installed successfully!"
@@ -229,14 +388,25 @@ echo ""
 echo "  Next steps:"
 echo "  1. Configure provider, API key, and model:"
 echo "     cue setup"
-echo "     # or: cue key set openrouter && cue config set providers.primary.model <model>"
 echo ""
-echo "  2. Reload your shell:"
-echo "     source ~/.zshrc"
+if [[ "$TARGET_SHELL" == "bash" ]]; then
+    echo "  2. Reload your shell:"
+    echo "     source $(profile_for_shell bash)"
+elif [[ "$TARGET_SHELL" == "zsh" ]]; then
+    echo "  2. Reload your shell:"
+    echo "     source $(profile_for_shell zsh)"
+else
+    echo "  2. Ensure ${CUE_VENV_DIR}/bin is on your PATH, then use:"
+    echo "     cue generate \"your intent\""
+fi
 echo ""
 echo "  3. Verify install:      cue doctor"
-echo "  4. Press Ctrl+K at any prompt and type your intent."
-echo "     (In Cursor, rebind if ^K is stolen: export CUE_KEY_GENERATE='^X^K')"
+if [[ "$TARGET_SHELL" == "zsh" || "$TARGET_SHELL" == "bash" ]]; then
+    echo "  4. Press Ctrl+K at any prompt and type your intent."
+    if [[ "$OS" == "darwin" ]]; then
+        echo "     (In Cursor, rebind if ^K is stolen: export CUE_KEY_GENERATE='^X^K')"
+    fi
+fi
 echo ""
 echo "  Binaries:             ${CUE_VENV_DIR}/bin/"
 echo "  Update shell widget:  cue install-shell"
