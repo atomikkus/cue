@@ -47,6 +47,55 @@ _DANGER_PATTERNS: list[tuple[str, re.Pattern]] = [
 _DANGER_KEYWORDS = frozenset([":(){ :|:& };:", "> /dev/sda"])
 
 
+_META_BINARIES = frozenset({"cue", "cue-daemon"})
+
+_SHELL_SIGNAL_RE = re.compile(
+    r"(\./|\.\./|/|"
+    r"-\w|"
+    r"\||>|;|"
+    r"\*|`|"
+    r"\$\(|\$\{)"
+)
+
+
+def is_likely_shell_command(command: str) -> bool:
+    """Heuristic: distinguish real shell commands from natural-language history lines.
+
+    Tier 2 must not surface chatty lines like "find all files with pdf?" even when
+    embeddings match the user's intent.
+    """
+    command = command.strip()
+    if not command or command.endswith("?"):
+        return False
+    if command.startswith("#"):
+        return False
+
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+
+    leading = tokens[0].split("/")[-1]
+    if leading in _META_BINARIES:
+        return False
+    if len(tokens) == 1:
+        return shutil.which(leading) is not None or tokens[0].startswith("/")
+
+    if _SHELL_SIGNAL_RE.search(command):
+        return True
+
+    # e.g. find . -name ...
+    if len(tokens) >= 2 and tokens[1] == ".":
+        return True
+
+    if len(tokens) == 2 and shutil.which(leading) is not None:
+        return True
+
+    return False
+
+
 @dataclass
 class ValidationResult:
     """Result of validating a single command string."""

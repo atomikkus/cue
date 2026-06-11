@@ -99,7 +99,7 @@ _cue_make_request() {
     [[ -n "${CUE_REQ_BUFFER:-}" ]] && env_args+=(CUE_REQ_BUFFER="$CUE_REQ_BUFFER")
     [[ -n "${CUE_REQ_COMMAND:-}" ]] && env_args+=(CUE_REQ_COMMAND="$CUE_REQ_COMMAND")
     env_args+=(CUE_LAST_EXIT="${CUE_LAST_EXIT:-0}")
-    REPLY="$(env "${env_args[@]}" _cue_python - "$op" <<'PYEOF'
+    REPLY="$(env "${env_args[@]}" python3 - "$op" <<'PYEOF'
 import json, os, subprocess, sys
 
 op = sys.argv[1]
@@ -173,11 +173,29 @@ _cue_generate() {
     CUE_REQ_QUERY="$query"
     unset CUE_REQ_BUFFER CUE_REQ_COMMAND
     local req_json
-    req_json="$(_cue_make_request generate)"
+    _cue_make_request generate
+    req_json="$REPLY"
 
-    response="$(_cue_send "$req_json" 2>/dev/null)"
+    if ! response="$(_cue_send "$req_json" 2>&1)"; then
+        BUFFER="# cue: daemon error — run: cue-daemon start"
+        zle end-of-line
+        zle redisplay
+        return
+    fi
+    if [[ -z "$response" ]]; then
+        BUFFER="# cue: empty response from daemon"
+        zle end-of-line
+        zle redisplay
+        return
+    fi
     _cue_parse_command "$response"
     command="$REPLY"
+    if [[ -z "$command" ]]; then
+        BUFFER="# cue: no command returned (check: cue doctor)"
+        zle end-of-line
+        zle redisplay
+        return
+    fi
 
     BUFFER="$command"
     zle end-of-line
@@ -202,7 +220,8 @@ _cue_explain() {
     unset CUE_REQ_QUERY CUE_REQ_COMMAND
     CUE_REQ_BUFFER="$buffer_cmd"
     local req_json response explanation
-    req_json="$(_cue_make_request explain)"
+    _cue_make_request explain
+    req_json="$REPLY"
 
     response="$(_cue_send "$req_json" 2>/dev/null)"
     _cue_parse_command "$response"
@@ -234,7 +253,8 @@ _cue_fix_last() {
     CUE_REQ_QUERY="fix the failed command"
     CUE_REQ_BUFFER="$last_cmd"
     local req_json response command
-    req_json="$(_cue_make_request fix_last)"
+    _cue_make_request fix_last
+    req_json="$REPLY"
 
     response="$(_cue_send "$req_json" 2>/dev/null)"
     _cue_parse_command "$response"
@@ -257,7 +277,8 @@ _cue_precmd() {
         unset CUE_REQ_QUERY CUE_REQ_BUFFER
         CUE_REQ_COMMAND="$last_cmd"
         local req_json
-        req_json="$(_cue_make_request index_cmd)"
+        _cue_make_request index_cmd
+        req_json="$REPLY"
         ( _cue_send "$req_json" &>/dev/null ) &!
     fi
 }

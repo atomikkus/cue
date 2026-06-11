@@ -449,6 +449,25 @@ class Store:
             rows = self._conn.execute("SELECT command FROM history_index").fetchall()
             return frozenset(r["command"] for r in rows)
 
+    def history_purge_non_commands(self) -> int:
+        """Remove natural-language lines mistakenly indexed as shell history."""
+        from cue.validator import is_likely_shell_command  # noqa: PLC0415
+
+        with self._lock:
+            rows = self._conn.execute("SELECT id, command FROM history_index").fetchall()
+            bad_ids = [r["id"] for r in rows if not is_likely_shell_command(r["command"])]
+            if not bad_ids:
+                return 0
+            placeholders = ",".join("?" * len(bad_ids))
+            self._conn.execute(
+                f"DELETE FROM history_index WHERE id IN ({placeholders})",
+                bad_ids,
+            )
+            self._conn.commit()
+        self._invalidate_history_cache()
+        log.info("Purged %d non-command rows from history_index", len(bad_ids))
+        return len(bad_ids)
+
     # ------------------------------------------------------------------
     # Telemetry
     # ------------------------------------------------------------------

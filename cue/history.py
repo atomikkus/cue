@@ -16,6 +16,8 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from cue.validator import is_likely_shell_command
+
 if TYPE_CHECKING:
     from cue.embedder import embed_batch
     from cue.store import Store
@@ -79,6 +81,8 @@ def _should_index(cmd: str) -> bool:
     if any(cmd.startswith(prefix) for prefix in _IGNORE_PREFIXES):
         return False
     if len(cmd) < 4:
+        return False
+    if not is_likely_shell_command(cmd):
         return False
     return True
 

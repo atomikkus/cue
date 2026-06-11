@@ -27,7 +27,7 @@ from cue.providers.base import (
     few_shot_to_messages,
 )
 from cue.store import Store
-from cue.validator import ValidationResult, validate
+from cue.validator import ValidationResult, is_likely_shell_command, validate
 
 log = logging.getLogger(__name__)
 
@@ -192,6 +192,9 @@ class Resolver:
             return None, best_score
 
         cmd = row["command"]
+        if not is_likely_shell_command(cmd):
+            return None, best_score
+
         self.store.semantic_update_hit(row["id"])
         v = validate(cmd, danger_scan=self.danger_scan)
         return ResolveResult(
@@ -213,22 +216,29 @@ class Resolver:
         if mat.shape[0] == 0:
             return None, None
 
-        hits = self.embedder.top_k_similar(query_vec, mat, k=3)
+        hits = self.embedder.top_k_similar(query_vec, mat, k=5)
         if not hits:
             return None, None
 
-        best_idx, best_score = hits[0]
-        best_cmd = rows[best_idx]["command"]
+        best_cmd = rows[hits[0][0]]["command"]
 
-        if best_score >= self.history_threshold:
-            v = validate(best_cmd, danger_scan=self.danger_scan)
+        for idx, score in hits:
+            if score < self.history_threshold:
+                break
+            cmd = rows[idx]["command"]
+            if not is_likely_shell_command(cmd):
+                log.debug("Tier 2 skip non-command history: %r (score=%.3f)", cmd[:60], score)
+                continue
+            v = validate(cmd, danger_scan=self.danger_scan)
+            if not v.is_valid:
+                continue
             return ResolveResult(
                 command=v.safe_command,
-                raw_command=best_cmd,
+                raw_command=cmd,
                 tier=2,
-                confidence=best_score,
+                confidence=score,
                 validation=v,
-            ), best_cmd
+            ), cmd
 
         return None, best_cmd
 

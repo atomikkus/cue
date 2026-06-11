@@ -4,7 +4,7 @@ All tests use no network calls and no LLM.
 """
 
 import pytest
-from cue.validator import validate, ValidationResult
+from cue.validator import is_likely_shell_command, validate, ValidationResult
 
 
 # ---------------------------------------------------------------------------
@@ -157,3 +157,24 @@ class TestBinaryExistence:
     def test_sudo_wrapped(self):
         r = validate("sudo ls -la")
         assert r.binary_found  # should look through sudo to ls
+
+
+class TestIsLikelyShellCommand:
+    def test_rejects_natural_language_question(self):
+        assert not is_likely_shell_command("find all files with pdf?")
+
+    def test_accepts_find_with_flags(self):
+        assert is_likely_shell_command("find . -name '*.pdf'")
+
+    def test_accepts_two_token_cli(self):
+        assert is_likely_shell_command("git status")
+
+    def test_rejects_chatty_sentence(self):
+        assert not is_likely_shell_command("list all pdf files")
+
+    def test_rejects_nl_with_extension_token(self):
+        assert not is_likely_shell_command("find all files with .pdf")
+        assert not is_likely_shell_command("find me all files with .pdf")
+
+    def test_rejects_cue_cli_invocation(self):
+        assert not is_likely_shell_command('cue "list all pdf files"')

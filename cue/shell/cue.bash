@@ -71,7 +71,7 @@ _cue_make_request() {
     [[ -n "${CUE_REQ_BUFFER:-}" ]] && env_args+=(CUE_REQ_BUFFER="$CUE_REQ_BUFFER")
     [[ -n "${CUE_REQ_COMMAND:-}" ]] && env_args+=(CUE_REQ_COMMAND="$CUE_REQ_COMMAND")
     env_args+=(CUE_LAST_EXIT="${CUE_LAST_EXIT:-0}")
-    env "${env_args[@]}" _cue_python - "$op" <<'PYEOF'
+    env "${env_args[@]}" python3 - "$op" <<'PYEOF'
 import json, os, subprocess, sys
 
 op = sys.argv[1]
@@ -148,8 +148,19 @@ _cue_generate() {
     local req_json
     req_json="$(_cue_make_request generate)"
 
-    response="$(_cue_send "$req_json" 2>/dev/null)"
+    if ! response="$(_cue_send "$req_json" 2>&1)"; then
+        _cue_set_buffer "# cue: daemon error — run: cue-daemon start"
+        return 0
+    fi
+    if [[ -z "$response" ]]; then
+        _cue_set_buffer "# cue: empty response from daemon"
+        return 0
+    fi
     command="$(_cue_parse_command "$response")"
+    if [[ -z "$command" ]]; then
+        _cue_set_buffer "# cue: no command returned (check: cue doctor)"
+        return 0
+    fi
     _cue_set_buffer "$command"
 }
 

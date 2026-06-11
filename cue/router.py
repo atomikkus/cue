@@ -157,6 +157,7 @@ class Router:
         force = bool(request.get("force", False))
         source = request.get("source", "auto")
         try:
+            purged = self.store.history_purge_non_commands()
             count = ingest_history(
                 self.store,
                 self.embedder.embed_batch,
@@ -164,7 +165,7 @@ class Router:
                 source=source,
                 force=force,
             )
-            return {"ok": True, "indexed": count, "force": force}
+            return {"ok": True, "indexed": count, "purged": purged, "force": force}
         except Exception as exc:
             log.exception("Reindex failed")
             return {"ok": False, "error": str(exc)}

@@ -30,6 +30,14 @@ class TestDefaultIndexSource:
         assert history.default_index_source() == "zsh_history"
 
 
+class TestShouldIndex:
+    def test_skips_natural_language_question(self):
+        assert not history._should_index("find all files with pdf?")
+
+    def test_keeps_real_command(self):
+        assert history._should_index("find . -name '*.pdf'")
+
+
 class TestIngestHistoryAuto:
     def test_auto_ingests_both_sources(self, tmp_path: Path, monkeypatch):
         zsh_hist = tmp_path / ".zsh_history"

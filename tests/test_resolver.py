@@ -210,6 +210,24 @@ class TestTier2:
         assert result.command == "docker ps -a"
         provider.generate.assert_not_called()
 
+    def test_history_skips_natural_language_line(self, tmp_path):
+        store = _make_store(tmp_path)
+        vec = _make_vec(seed=1)
+        store.history_put("find all files with pdf?", vec, "zsh_history")
+
+        embedder = _make_mock_embedder(query_vec=vec)
+        embedder.top_k_similar.side_effect = lambda q, m, k=5: [(0, 0.95)]
+
+        provider = _make_mock_provider("find . -name '*.pdf'")
+        resolver = _make_resolver(store, embedder, provider)
+        resolver.history_threshold = 0.88
+
+        ctx = _make_context()
+        result = resolver.resolve("list all pdf files", ctx)
+
+        assert result.tier == 3
+        provider.generate.assert_called()
+
     def test_history_below_threshold_passes_hint_to_tier3(self, tmp_path):
         store = _make_store(tmp_path)
         vec = _make_vec(seed=1)
