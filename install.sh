@@ -11,12 +11,11 @@
 set -euo pipefail
 
 CUE_VERSION="0.1.0"
-CUE_CONFIG_DIR="${CUE_CONFIG_DIR:-${HOME}/.config/cue}"
-export CUE_CONFIG_DIR
-CUE_VENV_DIR="${CUE_CONFIG_DIR}/venv"
-CUE_PATH_LINE='export PATH="${HOME}/.config/cue/venv/bin:$PATH"'
-CUE_ZSH_HOOK_LINE='source "${HOME}/.config/cue/cue.zsh"'
-CUE_BASH_HOOK_LINE='source "${HOME}/.config/cue/cue.bash"'
+CUE_CONFIG_DIR=""
+CUE_VENV_DIR=""
+CUE_PATH_LINE=""
+CUE_ZSH_HOOK_LINE=""
+CUE_BASH_HOOK_LINE=""
 CUE_DAEMON_LAUNCH_LINE='cue-daemon start &>/dev/null'
 
 PYTHON="${PYTHON:-python3}"
@@ -58,6 +57,29 @@ done
 log()  { echo "  [cue] $*"; }
 ok()   { echo "  ✓ $*"; }
 warn() { echo "  ! $*"; }
+
+is_wsl() {
+    [[ -f /proc/version ]] && grep -qiE 'microsoft|wsl' /proc/version
+}
+
+resolve_config_dir() {
+    CUE_CONFIG_DIR="${CUE_CONFIG_DIR:-${HOME}/.config/cue}"
+    if is_wsl && [[ "$CUE_CONFIG_DIR" == /mnt/* ]]; then
+        local linux_home="/home/$(id -un)"
+        if [[ -d "$linux_home" && -w "$linux_home" ]]; then
+            warn "WSL: Windows mounts (/mnt/c) break Python venvs — using ${linux_home}/.config/cue"
+            CUE_CONFIG_DIR="${linux_home}/.config/cue"
+        else
+            warn "WSL: installing on ${CUE_CONFIG_DIR} may fail (venv + pip break on /mnt/c)."
+            warn "  Use a Linux home: export CUE_CONFIG_DIR=/home/\$(whoami)/.config/cue"
+        fi
+    fi
+    export CUE_CONFIG_DIR
+    CUE_VENV_DIR="${CUE_CONFIG_DIR}/venv"
+    CUE_PATH_LINE="export PATH=\"${CUE_CONFIG_DIR}/venv/bin:\$PATH\""
+    CUE_ZSH_HOOK_LINE="source \"${CUE_CONFIG_DIR}/cue.zsh\""
+    CUE_BASH_HOOK_LINE="source \"${CUE_CONFIG_DIR}/cue.bash\""
+}
 
 detect_os() {
     case "$(uname -s)" in
@@ -159,22 +181,63 @@ require_python() {
     ok "Python: $("$PYTHON" --version)"
 }
 
+venv_python() {
+    echo "${CUE_VENV_DIR}/bin/python"
+}
+
+venv_has_pip() {
+    local py
+    py="$(venv_python)"
+    [[ -x "$py" ]] && "$py" -m pip --version &>/dev/null
+}
+
 create_venv() {
-    local os distro
+    local os distro py
     os="$(detect_os)"
     distro="$(detect_distro_id)"
+    py="$(venv_python)"
 
     log "Creating virtual environment at ${CUE_VENV_DIR}..."
-    if [[ ! -x "${CUE_VENV_DIR}/bin/python" ]]; then
-        if ! "$PYTHON" -m venv "$CUE_VENV_DIR" 2>/dev/null; then
+
+    # Stale/broken venv: bin/python exists but pip is missing (common on WSL /mnt/c).
+    if [[ -x "$py" ]] && ! venv_has_pip; then
+        warn "Removing broken venv (pip missing or unusable)..."
+        rm -rf "$CUE_VENV_DIR"
+    fi
+
+    if [[ ! -x "$py" ]]; then
+        if ! "$PYTHON" -m venv "$CUE_VENV_DIR"; then
             echo "Error: failed to create virtual environment."
             if [[ "$os" == "linux" && "$distro" =~ ^(ubuntu|debian|pop|linuxmint)$ ]]; then
-                echo "  On Debian/Ubuntu, install: sudo apt install python3-venv"
+                echo "  On Debian/Ubuntu, install: sudo apt install python3 python3-venv python3-pip"
+            else
+                echo "  $(python_venv_hint "$os" "$distro")"
+            fi
+            if is_wsl && [[ "$CUE_CONFIG_DIR" == /mnt/* ]]; then
+                echo "  WSL: do not install on /mnt/c — use: export CUE_CONFIG_DIR=/home/\$(whoami)/.config/cue"
+            fi
+            exit 1
+        fi
+    fi
+
+    py="$(venv_python)"
+    if ! venv_has_pip; then
+        log "Bootstrapping pip in venv..."
+        if ! "$py" -m ensurepip --upgrade &>/dev/null; then
+            echo "Error: venv has no pip. Install system packages first:"
+            if [[ "$os" == "linux" && "$distro" =~ ^(ubuntu|debian|pop|linuxmint)$ ]]; then
+                echo "  sudo apt install python3-venv python3-pip"
             else
                 echo "  $(python_venv_hint "$os" "$distro")"
             fi
             exit 1
         fi
+    fi
+
+    if ! venv_has_pip; then
+        echo "Error: pip is not usable in ${CUE_VENV_DIR}."
+        echo "  Remove it and retry: rm -rf ${CUE_VENV_DIR} && ./install.sh"
+        exit 1
     fi
     ok "Virtual environment ready."
 }
@@ -271,6 +334,8 @@ remove_cue_lines_from_file() {
     fi
 }
 
+resolve_config_dir
+
 # ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
@@ -323,12 +388,11 @@ mkdir -p "$CUE_CONFIG_DIR"
 ok "Config dir: $CUE_CONFIG_DIR"
 
 create_venv
-VENV_PYTHON="${CUE_VENV_DIR}/bin/python"
-VENV_PIP="${CUE_VENV_DIR}/bin/pip"
+VENV_PYTHON="$(venv_python)"
 
 log "Installing cue Python package..."
-"$VENV_PIP" install --quiet --upgrade pip
-"$VENV_PIP" install --quiet "$SCRIPT_DIR"
+"$VENV_PYTHON" -m pip install --quiet --upgrade pip
+"$VENV_PYTHON" -m pip install --quiet "$SCRIPT_DIR"
 ok "cue package installed in venv."
 
 if [[ ! -f "${CUE_CONFIG_DIR}/config.toml" ]]; then
